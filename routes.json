@@ -1,0 +1,56 @@
+[
+    {
+        "id" : "R1",
+        "name" : "Guwahati–Shillong Highway",
+        "source" : "Guwahati",
+        "destination" : "Shillong",
+        "distance" : 100,
+        "time" : 3,
+        "weatherAffectedness" : "High"
+    },
+    {
+        "id" : "R2",
+        "name" : "Guwahati–Dimapur Highway",
+        "source" : "Guwahati",
+        "destination" : "Dimapur",
+        "distance" : 290,
+        "time" : 6,
+        "weatherAffectedness" : "Medium"
+    },
+    {
+        "id" : "R3",
+        "name" : "Dimapur–Imphal Highway",
+        "source" : "Dimapur",
+        "destination" : "Imphal",
+        "distance" : 210,
+        "time" : 6,
+        "weatherAffectedness" : "High"
+    },
+    {
+        "id" : "R4",
+        "name" : "Guwahati–Imphal Highway",
+        "source" : "Guwahati",
+        "destination" : "Imphal",
+        "distance" : 500,
+        "time" : 12,
+        "weatherAffectedness" : "High"
+    },
+    {
+        "id" : "R5",
+        "name" : "Guwahati–Shillong-Imphal Corridor",
+        "source" : "Guwahati",
+        "destination" : "Imphal",
+        "distance" : 520,
+        "time" : 11,
+        "weatherAffectedness" : "Medium"
+    },
+    {
+        "id" : "R6",
+        "name" : "Guwahati–Dimapur-Imphal Corridor",
+        "source" : "Guwahati",
+        "destination" : "Imphal",
+        "distance" : 500,
+        "time" : 12,
+        "weatherAffectedness" : "High"
+    }
+]
