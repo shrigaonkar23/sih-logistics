@@ -16,8 +16,8 @@ const url =
 
 const data = JSON.stringify({
     coordinates: [
-        [91.7362, 26.1445],
-        [91.8933, 25.5788]
+        sourceCoordinates,
+        destinationCoordinates
     ],
     alternative_routes: {
         target_count: 3,
