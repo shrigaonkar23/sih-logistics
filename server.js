@@ -1,21 +1,25 @@
 const http = require("http");
 const https = require("https");
 
+process.loadEnvFile(".env");
+
 const PORT = 3000;
 
-// ======================================================
-// SETTINGS
-// ======================================================
 
-// Route diversity is a benefit.
-// 0.30 means diversity helps the route,
-// but does not overpower distance and time.
-const DIVERSITY_WEIGHT = 0.30;
+// ============================================================
+// CORS
+// ============================================================
+
+const CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "http://localhost:5173",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type"
+};
 
 
-// ======================================================
-// HTTP / HTTPS HELPER
-// ======================================================
+// ============================================================
+// HTTP HELPERS
+// ============================================================
 
 function getJSON(url) {
 
@@ -25,56 +29,53 @@ function getJSON(url) {
             url,
             {
                 headers: {
-                    "User-Agent": "SIH-Logistics-Prototype/1.0",
+                    "User-Agent": "SIH-Logistics/1.0",
                     "Accept": "application/json"
                 }
             },
-            (res) => {
+            (response) => {
 
                 let data = "";
 
-                res.on("data", (chunk) => {
-                    data += chunk;
-                });
-
-                res.on("end", () => {
-
-                    if (res.statusCode < 200 || res.statusCode >= 300) {
-
-                        reject(
-                            new Error(
-                                `Request failed with status ${res.statusCode}: ${data}`
-                            )
-                        );
-
-                        return;
+                response.on(
+                    "data",
+                    chunk => {
+                        data += chunk;
                     }
+                );
 
-                    try {
+                response.on(
+                    "end",
+                    () => {
 
-                        resolve(JSON.parse(data));
+                        try {
 
-                    } catch (error) {
+                            const json =
+                                JSON.parse(data);
 
-                        reject(
-                            new Error("Invalid JSON response")
-                        );
+                            resolve(json);
 
+                        } catch (error) {
+
+                            reject(
+                                new Error(
+                                    "Invalid JSON response"
+                                )
+                            );
+                        }
                     }
-
-                });
+                );
 
             }
-        ).on("error", reject);
+        ).on(
+            "error",
+            reject
+        );
 
     });
 
 }
 
-
-// ======================================================
-// READ REQUEST BODY
-// ======================================================
 
 function readBody(req) {
 
@@ -82,60 +83,92 @@ function readBody(req) {
 
         let body = "";
 
-        req.on("data", (chunk) => {
-            body += chunk;
-        });
+        req.on(
+            "data",
+            chunk => {
+                body += chunk;
+            }
+        );
 
-        req.on("end", () => {
-            resolve(body);
-        });
+        req.on(
+            "end",
+            () => {
 
-        req.on("error", reject);
+                try {
+
+                    resolve(
+                        JSON.parse(body)
+                    );
+
+                } catch (error) {
+
+                    reject(
+                        new Error(
+                            "Invalid JSON body"
+                        )
+                    );
+                }
+            }
+        );
+
+        req.on(
+            "error",
+            reject
+        );
 
     });
 
 }
 
 
-// ======================================================
-// SEND JSON
-// ======================================================
+function sendJSON(
+    res,
+    statusCode,
+    data
+) {
 
-function sendJSON(res, statusCode, data) {
-
-    res.statusCode = statusCode;
-
-    res.setHeader(
-        "Content-Type",
-        "application/json"
+    res.writeHead(
+        statusCode,
+        {
+            ...CORS_HEADERS,
+            "Content-Type":
+                "application/json"
+        }
     );
 
     res.end(
-        JSON.stringify(data, null, 2)
+        JSON.stringify(data)
     );
 
 }
 
 
-// ======================================================
-// GEOCODING USING ORS
-// ======================================================
+// ============================================================
+// GEOCODING
+// ============================================================
 
 async function geocodePlace(place) {
 
-    const apiKey = process.env.ORS_API_KEY;
+    const apiKey =
+        process.env.ORS_API_KEY;
 
     if (!apiKey) {
-        throw new Error("ORS_API_KEY is missing from .env");
+
+        throw new Error(
+            "ORS_API_KEY is missing from .env"
+        );
     }
 
     const url =
         "https://api.openrouteservice.org/geocode/search" +
-        "?api_key=" + encodeURIComponent(apiKey) +
-        "&text=" + encodeURIComponent(place) +
+        "?api_key=" +
+        encodeURIComponent(apiKey) +
+        "&text=" +
+        encodeURIComponent(place) +
         "&size=1";
 
-    const data = await getJSON(url);
+    const data =
+        await getJSON(url);
 
     if (
         !data.features ||
@@ -145,7 +178,6 @@ async function geocodePlace(place) {
         throw new Error(
             `Could not find location: ${place}`
         );
-
     }
 
     const coordinates =
@@ -166,9 +198,9 @@ async function geocodePlace(place) {
 }
 
 
-// ======================================================
-// HAVERSINE DISTANCE
-// ======================================================
+// ============================================================
+// DISTANCE CALCULATIONS
+// ============================================================
 
 function haversineDistance(
     lat1,
@@ -188,10 +220,19 @@ function haversineDistance(
         Math.PI / 180;
 
     const a =
-        Math.sin(dLat / 2) ** 2 +
-        Math.cos(lat1 * Math.PI / 180) *
-        Math.cos(lat2 * Math.PI / 180) *
-        Math.sin(dLon / 2) ** 2;
+        Math.sin(dLat / 2) *
+        Math.sin(dLat / 2) +
+
+        Math.cos(
+            lat1 * Math.PI / 180
+        ) *
+
+        Math.cos(
+            lat2 * Math.PI / 180
+        ) *
+
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
 
     const c =
         2 *
@@ -205,226 +246,147 @@ function haversineDistance(
 }
 
 
-// ======================================================
-// FIND NEAREST POINT ON REFERENCE ROUTE
-// ======================================================
+// ============================================================
+// ROUTE DIVERSITY
+// ============================================================
 
 function findNearestDistanceToRoute(
     point,
     routeCoordinates
 ) {
 
-    let minimumDistance = Infinity;
+    let minimumDistance =
+        Infinity;
 
-    for (const coordinate of routeCoordinates) {
+    for (
+        let i = 0;
+        i < routeCoordinates.length;
+        i++
+    ) {
+
+        const coordinate =
+            routeCoordinates[i];
+
+        const longitude =
+            coordinate[0];
+
+        const latitude =
+            coordinate[1];
 
         const distance =
             haversineDistance(
                 point[1],
                 point[0],
-                coordinate[1],
-                coordinate[0]
+                latitude,
+                longitude
             );
 
-        if (distance < minimumDistance) {
+        if (
+            distance <
+            minimumDistance
+        ) {
 
             minimumDistance =
                 distance;
-
         }
-
     }
 
     return minimumDistance;
-
 }
 
 
-// ======================================================
-// CALCULATE ROUTE DIVERSITY
-// ======================================================
-//
-// Share %:
-// Percentage of the alternative route that follows
-// the reference route.
-//
-// Diversity %:
-// 100 - Share %
-//
-// Higher diversity = better resilience.
-//
-// Diversity Benefit:
-// Diversity % converted to a 0–10 scale.
-//
-// Example:
-//
-// Share      = 20%
-// Diversity = 80%
-// Benefit   = 8
-// ======================================================
-
 function calculateRouteDiversity(
-    referenceCoordinates,
-    alternativeCoordinates
+    route,
+    referenceRoute
 ) {
 
     if (
-        !referenceCoordinates ||
-        !alternativeCoordinates ||
-        referenceCoordinates.length === 0 ||
-        alternativeCoordinates.length === 0
+        !route.coordinates ||
+        !referenceRoute.coordinates
     ) {
 
         return {
-
-            sharedDistanceKm: 0,
-
-            sharePercent: 0,
-
-            diversityPercent: 100,
-
-            diversityBenefit: 10
-
+            share: 0,
+            diversity: 0,
+            diversityBenefit: 0
         };
-
     }
 
+    const toleranceKm =
+        0.05;
 
-    // 50 metre tolerance
-    const toleranceKm = 0.05;
-
-    let sharedDistanceKm = 0;
-
-    let alternativeDistanceKm = 0;
-
+    let sharedPoints = 0;
 
     for (
-        let i = 1;
-        i < alternativeCoordinates.length;
-        i++
+        const point
+        of route.coordinates
     ) {
 
-        const start =
-            alternativeCoordinates[i - 1];
-
-        const end =
-            alternativeCoordinates[i];
-
-
-        const segmentDistance =
-            haversineDistance(
-                start[1],
-                start[0],
-                end[1],
-                end[0]
-            );
-
-
-        alternativeDistanceKm +=
-            segmentDistance;
-
-
-        const midpoint = [
-
-            (start[0] + end[0]) / 2,
-
-            (start[1] + end[1]) / 2
-
-        ];
-
-
-        const nearestDistance =
+        const distance =
             findNearestDistanceToRoute(
-                midpoint,
-                referenceCoordinates
+                point,
+                referenceRoute.coordinates
             );
 
+        if (
+            distance <= toleranceKm
+        ) {
 
-        if (nearestDistance <= toleranceKm) {
-
-            sharedDistanceKm +=
-                segmentDistance;
-
+            sharedPoints++;
         }
-
     }
 
+    const share =
+        route.coordinates.length > 0
+            ? sharedPoints /
+              route.coordinates.length
+            : 1;
 
-    if (alternativeDistanceKm === 0) {
-
-        return {
-
-            sharedDistanceKm: 0,
-
-            sharePercent: 0,
-
-            diversityPercent: 100,
-
-            diversityBenefit: 10
-
-        };
-
-    }
-
-
-    const sharePercent =
-        (
-            sharedDistanceKm /
-            alternativeDistanceKm
-        ) * 100;
-
-
-    const diversityPercent =
-        100 - sharePercent;
-
+    const diversity =
+        Math.max(
+            0,
+            1 - share
+        );
 
     const diversityBenefit =
-        diversityPercent / 10;
-
+        diversity * 10;
 
     return {
 
-        sharedDistanceKm:
+        share:
             Number(
-                sharedDistanceKm.toFixed(2)
+                (share * 100)
+                .toFixed(1)
             ),
 
-        sharePercent:
+        diversity:
             Number(
-                sharePercent.toFixed(2)
-            ),
-
-        diversityPercent:
-            Number(
-                diversityPercent.toFixed(2)
+                (diversity * 100)
+                .toFixed(1)
             ),
 
         diversityBenefit:
             Number(
-                diversityBenefit.toFixed(2)
+                diversityBenefit
+                .toFixed(2)
             )
-
     };
 
 }
 
 
-// ======================================================
-// URGENCY FACTOR
-// ======================================================
-//
-// LOW      = 0.5
-// MEDIUM   = 1.0
-// HIGH     = 1.5
-// CRITICAL = 2.0
-// ======================================================
+// ============================================================
+// URGENCY
+// ============================================================
 
-function getUrgencyFactor(urgency) {
+function getUrgencyFactor(
+    urgency
+) {
 
-    const value =
-        String(urgency).toUpperCase();
-
-    switch (value) {
+    switch (
+        String(urgency)
+            .toUpperCase()
+    ) {
 
         case "LOW":
             return 0.5;
@@ -440,462 +402,738 @@ function getUrgencyFactor(urgency) {
 
         default:
             return 1.0;
-
     }
 
 }
 
 
-// ======================================================
-// DISTANCE + TIME PENALTIES
-// ======================================================
-//
-// Alternative routes are compared against Route 1.
-//
-// Distance penalty:
-// Extra distance % / 10
-//
-// Time penalty:
-// Extra time % / 10
-// multiplied by urgency factor.
-//
-// Lower penalty = better.
-// ======================================================
+// ============================================================
+// ROUTE SCORING
+// ============================================================
 
 function calculateWeightFactor(
+    route,
     referenceRoute,
-    alternativeRoute,
     urgency
 ) {
 
-    const referenceDistance =
+    const distanceDifference =
+        route.distanceKm -
         referenceRoute.distanceKm;
 
-    const alternativeDistance =
-        alternativeRoute.distanceKm;
+    const distancePenalty =
+        referenceRoute.distanceKm > 0
+            ? (
+                distanceDifference /
+                referenceRoute.distanceKm
+            ) * 10
+            : 0;
 
-    const referenceTime =
+    const timeDifference =
+        route.durationMin -
         referenceRoute.durationMin;
 
-    const alternativeTime =
-        alternativeRoute.durationMin;
-
-
-    let distancePenaltyPercent = 0;
-
-    let timePenaltyPercent = 0;
-
-
-    if (referenceDistance > 0) {
-
-        distancePenaltyPercent =
-            (
-                (
-                    alternativeDistance -
-                    referenceDistance
-                ) /
-                referenceDistance
-            ) * 100;
-
-    }
-
-
-    if (referenceTime > 0) {
-
-        timePenaltyPercent =
-            (
-                (
-                    alternativeTime -
-                    referenceTime
-                ) /
-                referenceTime
-            ) * 100;
-
-    }
-
-
-    // Never give a negative penalty.
-    // If an alternative is shorter/faster,
-    // its penalty for that factor is simply 0.
-
-    distancePenaltyPercent =
-        Math.max(
-            0,
-            distancePenaltyPercent
-        );
-
-    timePenaltyPercent =
-        Math.max(
-            0,
-            timePenaltyPercent
-        );
-
-
     const urgencyFactor =
-        getUrgencyFactor(urgency);
-
-
-    const distancePenalty =
-        Math.min(
-            10,
-            distancePenaltyPercent / 10
+        getUrgencyFactor(
+            urgency
         );
-
 
     const timePenalty =
-        Math.min(
-            10,
-            (
-                timePenaltyPercent / 10
-            ) * urgencyFactor
-        );
+        referenceRoute.durationMin > 0
+            ? (
+                timeDifference /
+                referenceRoute.durationMin
+            ) *
+            10 *
+            urgencyFactor
+            : 0;
 
+    return Number(
+        (
+            Math.max(
+                0,
+                distancePenalty
+            ) +
+
+            Math.max(
+                0,
+                timePenalty
+            )
+        ).toFixed(2)
+    );
+
+}
+
+
+function calculateRawScore(
+    route,
+    referenceRoute,
+    urgency
+) {
 
     const weightFactor =
-        distancePenalty +
-        timePenalty;
+        calculateWeightFactor(
+            route,
+            referenceRoute,
+            urgency
+        );
 
+    const diversity =
+        calculateRouteDiversity(
+            route,
+            referenceRoute
+        );
+
+    const diversityBenefit =
+        diversity.diversityBenefit;
+
+    const rawScore =
+        weightFactor -
+        (
+            diversityBenefit *
+            0.30
+        );
 
     return {
 
-        distancePenaltyPercent:
+        weightFactor,
+
+        rawScore:
             Number(
-                distancePenaltyPercent.toFixed(2)
+                Math.max(
+                    0,
+                    rawScore
+                ).toFixed(2)
             ),
 
-        timePenaltyPercent:
-            Number(
-                timePenaltyPercent.toFixed(2)
-            ),
+        share:
+            diversity.share,
 
-        distancePenalty:
-            Number(
-                distancePenalty.toFixed(2)
-            ),
+        diversity:
+            diversity.diversity,
 
-        timePenalty:
-            Number(
-                timePenalty.toFixed(2)
-            ),
-
-        urgencyFactor:
-            urgencyFactor,
-
-        weightFactor:
-            Number(
-                weightFactor.toFixed(2)
-            )
+        diversityBenefit
 
     };
 
 }
 
 
-// ======================================================
-// RAW SCORE
-// ======================================================
-//
-// Raw Score:
-//
-//     Distance Penalty
-//   + Time Penalty
-//   - Diversity Benefit
-//
-// Diversity is a BENEFIT, so it is subtracted.
-//
-// Lower Raw Score = better.
-//
-// Example:
-//
-// Weight Factor    = 1.55
-// Diversity        = 3.94
-// Diversity Weight = 0.30
-//
-// Diversity benefit = 3.94 × 0.30
-//                   = 1.182
-//
-// Raw Score = 1.55 - 1.182
-//           = 0.368
-//           ≈ 0.37
-// ======================================================
-
-function calculateRawScore(
-    weightFactor,
-    diversityBenefit
-) {
-
-    const weightedDiversityBenefit =
-        diversityBenefit *
-        DIVERSITY_WEIGHT;
-
-
-    const rawScore =
-        weightFactor -
-        weightedDiversityBenefit;
-
-
-    return Number(
-        rawScore.toFixed(2)
-    );
-
-}
-
-
-// ======================================================
-// SAFETY SCORE
-// ======================================================
-//
-// Safety Score is NOT relative.
-//
-// It is directly derived from the route's
-// calculated raw penalty.
-//
-// Safety Score:
-//
-//     100 - Raw Score
-//
-// Higher = safer.
-//
-// Example:
-//
-// Raw Score = 0
-// Safety    = 100
-//
-// Raw Score = 0.37
-// Safety    = 99.63
-//
-// Raw Score = 20
-// Safety    = 80
-//
-// Score is clamped between 0 and 100.
-// ======================================================
-
 function calculateSafetyScore(
     rawScore
 ) {
 
-    let safetyScore =
-        100 - rawScore;
-
-
-    safetyScore =
+    return Number(
         Math.max(
             0,
             Math.min(
                 100,
-                safetyScore
+                100 - rawScore
             )
-        );
-
-
-    return Number(
-        safetyScore.toFixed(2)
+        ).toFixed(2)
     );
 
 }
 
 
-// ======================================================
+// ============================================================
+// CONVERT OSRM ROUTE
+// ============================================================
+
+function convertOSRMRoute(
+    route
+) {
+
+    return {
+
+        distanceKm:
+            route.distance /
+            1000,
+
+        durationMin:
+            route.duration /
+            60,
+
+        coordinates:
+            route.geometry?.coordinates ||
+            [],
+
+        distanceMeters:
+            route.distance,
+
+        durationSeconds:
+            route.duration
+
+    };
+
+}
+
+
+// ============================================================
+// NEW: GENERATE WAYPOINTS
+// ============================================================
+
+function generateAlternativeWaypoints(
+    source,
+    destination
+) {
+
+    const sourceLat =
+        source.latitude;
+
+    const sourceLon =
+        source.longitude;
+
+    const destinationLat =
+        destination.latitude;
+
+    const destinationLon =
+        destination.longitude;
+
+
+    // Midpoint between source and destination
+
+    const midLat =
+        (
+            sourceLat +
+            destinationLat
+        ) / 2;
+
+    const midLon =
+        (
+            sourceLon +
+            destinationLon
+        ) / 2;
+
+
+    // Difference between coordinates
+
+    const deltaLat =
+        destinationLat -
+        sourceLat;
+
+    const deltaLon =
+        destinationLon -
+        sourceLon;
+
+
+    // Calculate perpendicular direction
+
+    const length =
+        Math.sqrt(
+            deltaLat * deltaLat +
+            deltaLon * deltaLon
+        );
+
+
+    if (length === 0) {
+
+        return [];
+
+    }
+
+
+    const perpendicularLat =
+        -deltaLon / length;
+
+    const perpendicularLon =
+        deltaLat / length;
+
+
+    /*
+        Offset size.
+
+        Around 0.12 degrees gives
+        a meaningful detour for
+        North-East India distances.
+
+        We keep it relatively small
+        so routes don't become
+        unnecessarily huge.
+    */
+
+    const offset =
+        0.12;
+
+
+    const waypointNorth = {
+
+        latitude:
+            midLat +
+            (
+                perpendicularLat *
+                offset
+            ),
+
+        longitude:
+            midLon +
+            (
+                perpendicularLon *
+                offset
+            )
+
+    };
+
+
+    const waypointSouth = {
+
+        latitude:
+            midLat -
+            (
+                perpendicularLat *
+                offset
+            ),
+
+        longitude:
+            midLon -
+            (
+                perpendicularLon *
+                offset
+            )
+
+    };
+
+
+    return [
+
+        waypointNorth,
+
+        waypointSouth
+
+    ];
+
+}
+
+
+// ============================================================
+// OSRM ROUTING
+// ============================================================
+
+async function getSingleOSRMRoute(
+    coordinates
+) {
+
+    const coordinateString =
+        coordinates
+            .map(
+                point =>
+                    `${point.longitude},${point.latitude}`
+            )
+            .join(";");
+
+
+    const url =
+        "https://router.project-osrm.org/route/v1/driving/" +
+        coordinateString +
+
+        "?overview=full" +
+
+        "&geometries=geojson" +
+
+        "&steps=true" +
+
+        "&annotations=true";
+
+
+    const data =
+        await getJSON(url);
+
+
+    if (
+        data.code !== "Ok" ||
+        !data.routes ||
+        data.routes.length === 0
+    ) {
+
+        return null;
+
+    }
+
+
+    return data.routes[0];
+
+}
+
+
+// ============================================================
+// GET MULTIPLE ROUTES
+// ============================================================
+
+async function getOSRMRoutes(
+    source,
+    destination
+) {
+
+    console.log("");
+    console.log(
+        "========== ROUTE GENERATION =========="
+    );
+
+
+    // --------------------------------------------------------
+    // ROUTE 1
+    // Direct route
+    // --------------------------------------------------------
+
+    console.log(
+        "Generating Route 1..."
+    );
+
+
+    const directRoute =
+        await getSingleOSRMRoute(
+            [
+                source,
+                destination
+            ]
+        );
+
+
+    const routes = [];
+
+
+    if (directRoute) {
+
+        routes.push(
+            directRoute
+        );
+
+        console.log(
+            "Route 1 generated successfully"
+        );
+
+    }
+
+
+    // --------------------------------------------------------
+    // Generate alternative waypoints
+    // --------------------------------------------------------
+
+    const waypoints =
+        generateAlternativeWaypoints(
+            source,
+            destination
+        );
+
+
+    // --------------------------------------------------------
+    // ROUTE 2
+    // Via first waypoint
+    // --------------------------------------------------------
+
+    if (
+        waypoints[0]
+    ) {
+
+        console.log(
+            "Generating Route 2..."
+        );
+
+
+        const route2 =
+            await getSingleOSRMRoute(
+                [
+                    source,
+
+                    {
+                        latitude:
+                            waypoints[0].latitude,
+
+                        longitude:
+                            waypoints[0].longitude
+                    },
+
+                    destination
+                ]
+            );
+
+
+        if (route2) {
+
+            routes.push(
+                route2
+            );
+
+            console.log(
+                "Route 2 generated successfully"
+            );
+
+        } else {
+
+            console.log(
+                "Route 2 could not be generated"
+            );
+
+        }
+
+    }
+
+
+    // --------------------------------------------------------
+    // ROUTE 3
+    // Via second waypoint
+    // --------------------------------------------------------
+
+    if (
+        waypoints[1]
+    ) {
+
+        console.log(
+            "Generating Route 3..."
+        );
+
+
+        const route3 =
+            await getSingleOSRMRoute(
+                [
+                    source,
+
+                    {
+                        latitude:
+                            waypoints[1].latitude,
+
+                        longitude:
+                            waypoints[1].longitude
+                    },
+
+                    destination
+                ]
+            );
+
+
+        if (route3) {
+
+            routes.push(
+                route3
+            );
+
+            console.log(
+                "Route 3 generated successfully"
+            );
+
+        } else {
+
+            console.log(
+                "Route 3 could not be generated"
+            );
+
+        }
+
+    }
+
+
+    // --------------------------------------------------------
+    // DEBUG
+    // --------------------------------------------------------
+
+    console.log("");
+
+    console.log(
+        "TOTAL GENERATED ROUTES:",
+        routes.length
+    );
+
+
+    console.log(
+        "ROUTE DISTANCES:",
+        routes.map(
+            route =>
+                (
+                    route.distance /
+                    1000
+                ).toFixed(2) +
+                " km"
+        )
+    );
+
+
+    console.log(
+        "ROUTE DURATIONS:",
+        routes.map(
+            route =>
+                (
+                    route.duration /
+                    60
+                ).toFixed(2) +
+                " min"
+        )
+    );
+
+
+    console.log(
+        "======================================"
+    );
+
+    console.log("");
+
+
+    if (
+        routes.length === 0
+    ) {
+
+        throw new Error(
+            "OSRM could not find any route"
+        );
+
+    }
+
+
+    return routes;
+
+}
+
+
+// ============================================================
 // PROCESS ROUTES
-// ======================================================
+// ============================================================
 
 function processRoutes(
     osrmRoutes,
     urgency
 ) {
 
-    const processedRoutes = [];
+    const convertedRoutes =
+        osrmRoutes.map(
+            route =>
+                convertOSRMRoute(
+                    route
+                )
+        );
 
 
-    // --------------------------------------------------
-    // FIRST PASS
-    // --------------------------------------------------
-
-    for (
-        let i = 0;
-        i < osrmRoutes.length;
-        i++
+    if (
+        convertedRoutes.length === 0
     ) {
 
-        const route =
-            osrmRoutes[i];
-
-
-        const coordinates =
-            route.geometry.coordinates;
-
-
-        const distanceKm =
-            route.distance / 1000;
-
-
-        const durationMin =
-            route.duration / 60;
-
-
-        processedRoutes.push({
-
-            routeNumber:
-                i + 1,
-
-            distanceKm:
-                Number(
-                    distanceKm.toFixed(2)
-                ),
-
-            durationMin:
-                Number(
-                    durationMin.toFixed(2)
-                ),
-
-            coordinates:
-                coordinates,
-
-            distanceMeters:
-                route.distance,
-
-            durationSeconds:
-                route.duration,
-
-            share:
-                null,
-
-            weightFactor:
-                null,
-
-            rawScore:
-                null,
-
-            safetyScore:
-                null
-
-        });
+        return [];
 
     }
 
 
-    // --------------------------------------------------
-    // REFERENCE ROUTE
-    // --------------------------------------------------
+    // First route = reference route
 
     const referenceRoute =
-        processedRoutes[0];
+        convertedRoutes[0];
 
 
-    // --------------------------------------------------
-    // SCORE EVERY ROUTE
-    // --------------------------------------------------
-
-    for (
-        let i = 0;
-        i < processedRoutes.length;
-        i++
-    ) {
-
-        const route =
-            processedRoutes[i];
-
-
-        // ==============================================
-        // ROUTE 1
-        // ==============================================
-
-        if (i === 0) {
-
-            route.share = {
-
-                sharedDistanceKm:
-                    route.distanceKm,
-
-                sharePercent:
-                    100,
-
-                diversityPercent:
-                    0,
-
-                diversityBenefit:
-                    0
-
-            };
-
-
-            route.weightFactor = {
-
-                distancePenaltyPercent:
-                    0,
-
-                timePenaltyPercent:
-                    0,
-
-                distancePenalty:
-                    0,
-
-                timePenalty:
-                    0,
-
-                urgencyFactor:
-                    getUrgencyFactor(urgency),
-
-                weightFactor:
-                    0
-
-            };
-
-
-            route.rawScore = 0;
-
-            route.safetyScore = 100;
-
-            continue;
-
-        }
-
-
-        // ==============================================
-        // ALTERNATIVE ROUTE
-        // ==============================================
-
-        const diversity =
-            calculateRouteDiversity(
-                referenceRoute.coordinates,
-                route.coordinates
-            );
-
-
-        const weight =
-            calculateWeightFactor(
-                referenceRoute,
+    const processedRoutes =
+        convertedRoutes.map(
+            (
                 route,
-                urgency
-            );
+                index
+            ) => {
+
+                const routeNumber =
+                    index + 1;
 
 
-        const rawScore =
-            calculateRawScore(
-                weight.weightFactor,
-                diversity.diversityBenefit
-            );
+                // Reference route
+
+                if (
+                    index === 0
+                ) {
+
+                    return {
+
+                        routeNumber,
+
+                        distanceKm:
+                            Number(
+                                route.distanceKm
+                                    .toFixed(2)
+                            ),
+
+                        durationMin:
+                            Number(
+                                route.durationMin
+                                    .toFixed(2)
+                            ),
+
+                        coordinates:
+                            route.coordinates,
+
+                        distanceMeters:
+                            route.distanceMeters,
+
+                        durationSeconds:
+                            route.durationSeconds,
+
+                        share: 100,
+
+                        diversity: 0,
+
+                        diversityBenefit: 0,
+
+                        weightFactor: 0,
+
+                        rawScore: 0,
+
+                        safetyScore: 100
+
+                    };
+
+                }
 
 
-        const safetyScore =
-            calculateSafetyScore(
-                rawScore
-            );
+                // Alternative routes
+
+                const scoring =
+                    calculateRawScore(
+                        route,
+                        referenceRoute,
+                        urgency
+                    );
 
 
-        route.share =
-            diversity;
+                return {
 
-        route.weightFactor =
-            weight;
+                    routeNumber,
 
-        route.rawScore =
-            rawScore;
+                    distanceKm:
+                        Number(
+                            route.distanceKm
+                                .toFixed(2)
+                        ),
 
-        route.safetyScore =
-            safetyScore;
+                    durationMin:
+                        Number(
+                            route.durationMin
+                                .toFixed(2)
+                        ),
 
-    }
+                    coordinates:
+                        route.coordinates,
+
+                    distanceMeters:
+                        route.distanceMeters,
+
+                    durationSeconds:
+                        route.durationSeconds,
+
+                    share:
+                        scoring.share,
+
+                    diversity:
+                        scoring.diversity,
+
+                    diversityBenefit:
+                        scoring.diversityBenefit,
+
+                    weightFactor:
+                        scoring.weightFactor,
+
+                    rawScore:
+                        scoring.rawScore,
+
+                    safetyScore:
+                        calculateSafetyScore(
+                            scoring.rawScore
+                        )
+
+                };
+
+            }
+        );
 
 
     return processedRoutes;
@@ -903,41 +1141,50 @@ function processRoutes(
 }
 
 
-// ======================================================
+// ============================================================
 // SELECT BEST ROUTE
-// ======================================================
-//
-// HIGHER SAFETY SCORE = BETTER
-// ======================================================
+// ============================================================
 
-function selectBestRoute(routes) {
+function selectBestRoute(
+    routes
+) {
 
-    let bestRoute =
-        routes[0];
+    if (
+        !routes ||
+        routes.length === 0
+    ) {
 
-
-    for (const route of routes) {
-
-        if (
-            route.safetyScore >
-            bestRoute.safetyScore
-        ) {
-
-            bestRoute = route;
-
-        }
+        return null;
 
     }
 
 
-    return bestRoute;
+    return routes.reduce(
+        (
+            best,
+            current
+        ) => {
+
+            if (
+                current.safetyScore >
+                best.safetyScore
+            ) {
+
+                return current;
+
+            }
+
+            return best;
+
+        }
+    );
 
 }
 
 
-// ======================================================
-// PRINT FINAL RESULT
-// ======================================================
+// ============================================================
+// PRINT RESULT
+// ============================================================
 
 function printFinalResult(
     routes,
@@ -945,7 +1192,6 @@ function printFinalResult(
 ) {
 
     console.log("");
-
     console.log(
         "================================================"
     );
@@ -959,125 +1205,72 @@ function printFinalResult(
     );
 
 
-    // ==================================================
-    // BEST ROUTE
-    // ==================================================
-
     console.log("");
-
     console.log(
         "**************** BEST ROUTE ****************"
     );
 
+    console.log(
+        "Route Number       :",
+        bestRoute.routeNumber
+    );
+
+    console.log(
+        "Distance           :",
+        bestRoute.distanceKm,
+        "km"
+    );
+
+    console.log(
+        "Estimated Time     :",
+        bestRoute.durationMin,
+        "min"
+    );
+
+    console.log(
+        "Safety Score       :",
+        `${bestRoute.safetyScore}/100`
+    );
+
+    console.log(
+        "Raw Risk Penalty   :",
+        bestRoute.rawScore
+    );
+
+
     console.log("");
-
     console.log(
-        `Route Number       : ${bestRoute.routeNumber}`
-    );
-
-    console.log(
-        `Distance           : ${bestRoute.distanceKm} km`
-    );
-
-    console.log(
-        `Estimated Time     : ${bestRoute.durationMin} min`
-    );
-
-    console.log(
-        `Safety Score       : ${bestRoute.safetyScore}/100`
-    );
-
-    console.log(
-        `Raw Risk Penalty   : ${bestRoute.rawScore}`
+        "**************** ALTERNATIVE ROUTES ****************"
     );
 
 
-    // ==================================================
-    // ALTERNATIVE ROUTES
-    // ==================================================
+    routes.forEach(
+        route => {
 
-    console.log("");
-
-    console.log(
-        "*************** ALTERNATIVE ROUTES ***************"
-    );
-
-
-    let alternativeNumber = 0;
-
-
-    for (const route of routes) {
-
-        if (
-            route.routeNumber ===
-            bestRoute.routeNumber
-        ) {
-
-            continue;
+            console.log(
+                `Route ${route.routeNumber} : ` +
+                `${route.distanceKm} km | ` +
+                `${route.durationMin} min | ` +
+                `Safety ${route.safetyScore}/100`
+            );
 
         }
+    );
 
-
-        alternativeNumber++;
-
-
-        console.log("");
-
-        console.log(
-            `Alternative ${alternativeNumber}`
-        );
-
-        console.log(
-            "----------------------------------------------"
-        );
-
-        console.log(
-            `Route Number       : ${route.routeNumber}`
-        );
-
-        console.log(
-            `Distance           : ${route.distanceKm} km`
-        );
-
-        console.log(
-            `Estimated Time     : ${route.durationMin} min`
-        );
-
-        console.log(
-            `Safety Score       : ${route.safetyScore}/100`
-        );
-
-        console.log(
-            `Raw Risk Penalty   : ${route.rawScore}`
-        );
-
-        console.log(
-            `Route Shared       : ${route.share.sharePercent}%`
-        );
-
-        console.log(
-            `Route Diversity    : ${route.share.diversityPercent}%`
-        );
-
-    }
-
-
-    // ==================================================
-    // FINAL RECOMMENDATION
-    // ==================================================
 
     console.log("");
-
     console.log(
         "================================================"
     );
 
     console.log(
-        `RECOMMENDED ROUTE : Route ${bestRoute.routeNumber}`
+        "RECOMMENDED ROUTE :",
+        `Route ${bestRoute.routeNumber}`
     );
 
     console.log(
-        `SAFETY SCORE      : ${bestRoute.safetyScore}/100`
+        "SAFETY SCORE      :",
+        `${bestRoute.safetyScore}/100`
     );
 
     console.log(
@@ -1088,59 +1281,12 @@ function printFinalResult(
         "================================================"
     );
 
-    console.log("");
-
 }
 
 
-// ======================================================
-// GET OSRM ROUTES
-// ======================================================
-
-async function getOSRMRoutes(
-    source,
-    destination
-) {
-
-    const url =
-        "https://router.project-osrm.org/route/v1/driving/" +
-
-        `${source.longitude},${source.latitude};` +
-
-        `${destination.longitude},${destination.latitude}` +
-
-        "?overview=full" +
-        "&geometries=geojson" +
-        "&steps=true" +
-        "&annotations=true" +
-        "&alternatives=3";
-
-
-    const data =
-        await getJSON(url);
-
-
-    if (
-        data.code !== "Ok" ||
-        !data.routes ||
-        data.routes.length === 0
-    ) {
-
-        throw new Error(
-            "OSRM could not find a route"
-        );
-
-    }
-
-
-    return data.routes;
-
-}
-
-
-// ======================================================
-// POST /find-route
-// ======================================================
+// ============================================================
+// FIND ROUTE HANDLER
+// ============================================================
 
 async function handleFindRoute(
     req,
@@ -1153,37 +1299,23 @@ async function handleFindRoute(
             await readBody(req);
 
 
-        let shipment;
+        console.log("");
+        console.log(
+            "Incoming shipment request:"
+        );
+
+        console.log(
+            body
+        );
 
 
-        try {
-
-            shipment =
-                JSON.parse(body);
-
-        } catch (error) {
-
-            sendJSON(
-                res,
-                400,
-                {
-                    error:
-                        "Request body must contain valid JSON"
-                }
-            );
-
-            return;
-
-        }
-
-
-        // ------------------------------------------------
+        // ----------------------------------------------------
         // VALIDATION
-        // ------------------------------------------------
+        // ----------------------------------------------------
 
         if (
-            !shipment.source ||
-            !shipment.destination
+            !body.source ||
+            !body.destination
         ) {
 
             sendJSON(
@@ -1200,103 +1332,54 @@ async function handleFindRoute(
         }
 
 
-        if (
-            typeof shipment.source !== "string" ||
-            typeof shipment.destination !== "string"
-        ) {
-
-            sendJSON(
-                res,
-                400,
-                {
-                    error:
-                        "Source and destination must be strings"
-                }
-            );
-
-            return;
-
-        }
-
-
         const urgency =
             String(
-                shipment.urgency || "MEDIUM"
+                body.urgency ||
+                "MEDIUM"
             ).toUpperCase();
 
 
-        const validUrgencies = [
-
-            "LOW",
-            "MEDIUM",
-            "HIGH",
-            "CRITICAL"
-
-        ];
-
-
-        if (
-            !validUrgencies.includes(
-                urgency
-            )
-        ) {
-
-            sendJSON(
-                res,
-                400,
-                {
-                    error:
-                        "Urgency must be LOW, MEDIUM, HIGH or CRITICAL"
-                }
-            );
-
-            return;
-
-        }
-
-
-        // ------------------------------------------------
-        // GEOCODE SOURCE
-        // ------------------------------------------------
-
-        console.log("");
+        // ----------------------------------------------------
+        // GEOCODE
+        // ----------------------------------------------------
 
         console.log(
-            `Geocoding source: ${shipment.source}`
+            "Geocoding source..."
         );
 
 
         const source =
             await geocodePlace(
-                shipment.source
+                body.source
             );
 
 
-        // ------------------------------------------------
-        // GEOCODE DESTINATION
-        // ------------------------------------------------
+        console.log(
+            "Source:",
+            source
+        );
+
 
         console.log(
-            `Geocoding destination: ${shipment.destination}`
+            "Geocoding destination..."
         );
 
 
         const destination =
             await geocodePlace(
-                shipment.destination
+                body.destination
             );
 
 
-        // ------------------------------------------------
-        // GET ROUTES
-        // ------------------------------------------------
-
-        console.log("");
-
         console.log(
-            "Getting routes from OSRM..."
+            "Destination:",
+            destination
         );
 
+
+        // ----------------------------------------------------
+        // GET ROUTES
+        // ----------------------------------------------------
 
         const osrmRoutes =
             await getOSRMRoutes(
@@ -1305,14 +1388,9 @@ async function handleFindRoute(
             );
 
 
-        console.log(
-            `OSRM returned ${osrmRoutes.length} routes`
-        );
-
-
-        // ------------------------------------------------
-        // PROCESS ROUTES
-        // ------------------------------------------------
+        // ----------------------------------------------------
+        // PROCESS / SCORE
+        // ----------------------------------------------------
 
         const routes =
             processRoutes(
@@ -1321,9 +1399,15 @@ async function handleFindRoute(
             );
 
 
-        // ------------------------------------------------
-        // SELECT BEST
-        // ------------------------------------------------
+        console.log(
+            "Processed routes:",
+            routes.length
+        );
+
+
+        // ----------------------------------------------------
+        // BEST ROUTE
+        // ----------------------------------------------------
 
         const bestRoute =
             selectBestRoute(
@@ -1331,33 +1415,26 @@ async function handleFindRoute(
             );
 
 
-        // ------------------------------------------------
-        // PRINT RESULT
-        // ------------------------------------------------
-
         printFinalResult(
             routes,
             bestRoute
         );
 
 
-        // ------------------------------------------------
+        // ----------------------------------------------------
         // SEND RESPONSE
-        // ------------------------------------------------
+        // ----------------------------------------------------
 
         sendJSON(
             res,
             200,
             {
 
-                source:
-                    source,
+                source,
 
-                destination:
-                    destination,
+                destination,
 
-                urgency:
-                    urgency,
+                urgency,
 
                 routeCount:
                     routes.length,
@@ -1378,8 +1455,7 @@ async function handleFindRoute(
 
                 },
 
-                routes:
-                    routes
+                routes
 
             }
         );
@@ -1387,11 +1463,9 @@ async function handleFindRoute(
 
     } catch (error) {
 
-        console.error("");
-
         console.error(
-            "ERROR:",
-            error.message
+            "FIND ROUTE ERROR:",
+            error
         );
 
 
@@ -1399,8 +1473,11 @@ async function handleFindRoute(
             res,
             500,
             {
+
                 error:
-                    error.message
+                    error.message ||
+                    "Failed to find route"
+
             }
         );
 
@@ -1409,57 +1486,94 @@ async function handleFindRoute(
 }
 
 
-// ======================================================
-// GET /routes
-// ======================================================
-
-function handleRoutes(
-    req,
-    res
-) {
-
-    sendJSON(
-        res,
-        200,
-        {
-            message:
-                "Use POST /find-route to calculate routes"
-        }
-    );
-
-}
-
-
-// ======================================================
-// HOME
-// ======================================================
-
-function handleHome(
-    req,
-    res
-) {
-
-    res.statusCode = 200;
-
-    res.setHeader(
-        "Content-Type",
-        "text/plain"
-    );
-
-    res.end(
-        "LOGISTICS PLATFORM IS RUNNING"
-    );
-
-}
-
-
-// ======================================================
+// ============================================================
 // SERVER
-// ======================================================
+// ============================================================
 
 const server =
     http.createServer(
-        async (req, res) => {
+        async (
+            req,
+            res
+        ) => {
+
+            // ------------------------------------------------
+            // CORS
+            // ------------------------------------------------
+
+            if (
+                req.method ===
+                "OPTIONS"
+            ) {
+
+                res.writeHead(
+                    204,
+                    CORS_HEADERS
+                );
+
+                res.end();
+
+                return;
+
+            }
+
+
+            // ------------------------------------------------
+            // ROOT
+            // ------------------------------------------------
+
+            if (
+                req.method === "GET" &&
+                req.url === "/"
+            ) {
+
+                sendJSON(
+                    res,
+                    200,
+                    {
+
+                        message:
+                            "SILP backend is running",
+
+                        status:
+                            "OK"
+
+                    }
+                );
+
+                return;
+
+            }
+
+
+            // ------------------------------------------------
+            // GET ROUTES
+            // ------------------------------------------------
+
+            if (
+                req.method === "GET" &&
+                req.url === "/routes"
+            ) {
+
+                sendJSON(
+                    res,
+                    200,
+                    {
+
+                        message:
+                            "Route API is working"
+
+                    }
+                );
+
+                return;
+
+            }
+
+
+            // ------------------------------------------------
+            // FIND ROUTE
+            // ------------------------------------------------
 
             if (
                 req.method === "POST" &&
@@ -1471,73 +1585,53 @@ const server =
                     res
                 );
 
-            }
-
-            else if (
-                req.method === "GET" &&
-                req.url === "/routes"
-            ) {
-
-                handleRoutes(
-                    req,
-                    res
-                );
+                return;
 
             }
 
-            else if (
-                req.method === "GET" &&
-                req.url === "/"
-            ) {
 
-                handleHome(
-                    req,
-                    res
-                );
+            // ------------------------------------------------
+            // 404
+            // ------------------------------------------------
 
-            }
+            sendJSON(
+                res,
+                404,
+                {
 
-            else {
+                    error:
+                        "Endpoint not found"
 
-                sendJSON(
-                    res,
-                    404,
-                    {
-                        error:
-                            "Endpoint not found"
-                    }
-                );
-
-            }
+                }
+            );
 
         }
     );
 
 
-// ======================================================
+// ============================================================
 // START SERVER
-// ======================================================
+// ============================================================
 
 server.listen(
     PORT,
     () => {
 
         console.log("");
-
         console.log(
-            "================================================"
+            "======================================"
         );
 
         console.log(
-            "             SIH LOGISTICS SERVER"
+            "       SILP BACKEND SERVER"
         );
 
         console.log(
-            "================================================"
+            "======================================"
         );
 
         console.log(
-            `Server running on port ${PORT}`
+            `Server running on http://localhost:${PORT}`
         );
 
         console.log(
@@ -1549,11 +1643,7 @@ server.listen(
         );
 
         console.log(
-            "GET  /"
-        );
-
-        console.log(
-            "================================================"
+            "======================================"
         );
 
         console.log("");

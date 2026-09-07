@@ -1,0 +1,854 @@
+/* ============================================================
+   SILP - SMART INTELLIGENCE LOGISTICS PLATFORM
+   ============================================================ */
+
+/* =========================
+   GLOBAL
+   ========================= */
+
+   :root {
+    font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    color: #111827;
+    background: #f5f5f7;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+  }
+  
+  * {
+    box-sizing: border-box;
+  }
+  
+  html,
+  body {
+    margin: 0;
+    min-width: 320px;
+    min-height: 100%;
+  }
+  
+  body {
+    background: #f5f5f7;
+  }
+  
+  button,
+  input,
+  select {
+    font: inherit;
+  }
+  
+  button {
+    cursor: pointer;
+  }
+  
+  #root {
+    width: 100%;
+    min-height: 100vh;
+  }
+  
+  
+  /* =========================
+     APP
+     ========================= */
+  
+  .app {
+    display: flex;
+    width: 100%;
+    height: 100vh;
+    overflow: hidden;
+    background: #f5f5f7;
+  }
+  
+  
+  /* =========================
+     SIDEBAR
+     ========================= */
+  
+  .sidebar {
+    width: 420px;
+    min-width: 420px;
+    height: 100vh;
+    padding: 28px;
+    background: rgba(255, 255, 255, 0.96);
+    border-right: 1px solid #e5e7eb;
+    overflow-y: auto;
+  }
+  
+  
+  /* =========================
+     BRAND
+     ========================= */
+  
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 30px;
+  }
+  
+  .brand-icon {
+    width: 34px;
+    height: 34px;
+    flex: 0 0 34px;
+  
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  
+    margin: 0;
+    border-radius: 8px;
+  
+    background: #111827;
+    color: #ffffff;
+  
+    font-size: 16px;
+    font-weight: 800;
+    line-height: 1;
+    text-align: center;
+  }
+  
+  .brand-text {
+    min-width: 0;
+  }
+  
+  .brand h1 {
+    margin: 0;
+    color: #111827;
+    font-size: 21px;
+    font-weight: 700;
+    line-height: 1;
+    letter-spacing: -0.5px;
+  }
+  
+  .brand p {
+    margin: 5px 0 0;
+    color: #6b7280;
+    font-size: 11px;
+    line-height: 1.3;
+  }
+  
+  
+  /* =========================
+     NAVIGATION
+     ========================= */
+  
+  .dashboard-buttons {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 28px;
+  }
+  
+  .dashboard-button {
+    position: relative;
+  
+    width: 100%;
+    padding: 12px 14px;
+  
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  
+    border: 1px solid transparent;
+    border-radius: 12px;
+  
+    background: transparent;
+    color: #6b7280;
+  
+    font-size: 14px;
+    font-weight: 600;
+    text-align: center;
+  
+    transition:
+      background-color 0.2s ease,
+      color 0.2s ease,
+      border-color 0.2s ease;
+  }
+  
+  .dashboard-button:hover {
+    background: #f3f4f6;
+    color: #111827;
+  }
+  
+  .dashboard-button.active {
+    background: #f3f4f6;
+    color: #111827;
+    border-color: #e5e7eb;
+  }
+  
+  
+  /* =========================
+     PANEL
+     ========================= */
+  
+  .panel-content {
+    display: flex;
+    flex-direction: column;
+  }
+  
+  .panel-heading {
+    margin-bottom: 24px;
+  }
+  
+  .panel-heading h2 {
+    margin: 0 0 6px;
+  
+    color: #111827;
+  
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -0.6px;
+  }
+  
+  .panel-heading p {
+    margin: 0;
+  
+    color: #6b7280;
+  
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  
+  
+  /* =========================
+     INPUTS
+     ========================= */
+  
+  .input-group {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    margin-bottom: 17px;
+  }
+  
+  .input-group label {
+    color: #374151;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  
+  .input-group input,
+  .input-group select {
+    width: 100%;
+    height: 44px;
+  
+    padding: 0 13px;
+  
+    border: 1px solid #d1d5db;
+    border-radius: 11px;
+  
+    background: #ffffff;
+    color: #111827;
+  
+    font-size: 13px;
+    outline: none;
+  
+    transition:
+      border-color 0.2s ease,
+      box-shadow 0.2s ease;
+  }
+  
+  .input-group input:focus,
+  .input-group select:focus {
+    border-color: #9ca3af;
+    box-shadow: 0 0 0 3px rgba(17, 24, 39, 0.06);
+  }
+  
+  .input-group input::placeholder {
+    color: #9ca3af;
+  }
+  
+  
+  /* =========================
+     ERROR
+     ========================= */
+  
+  .error-message {
+    margin-bottom: 14px;
+    padding: 11px 13px;
+  
+    border: 1px solid #fecaca;
+    border-radius: 10px;
+  
+    background: #fef2f2;
+    color: #b91c1c;
+  
+    font-size: 12px;
+  }
+  
+  
+  /* =========================
+     FIND ROUTE BUTTON
+     ========================= */
+  
+  .find-route-button {
+    width: 100%;
+    height: 46px;
+  
+    margin-top: 6px;
+  
+    border: none;
+    border-radius: 12px;
+  
+    background: #111827;
+    color: #ffffff;
+  
+    font-size: 13px;
+    font-weight: 650;
+  
+    transition:
+      opacity 0.15s ease,
+      transform 0.15s ease;
+  }
+  
+  .find-route-button:hover {
+    opacity: 0.9;
+  }
+  
+  .find-route-button:active {
+    transform: scale(0.99);
+  }
+  
+  .find-route-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+  
+  
+  /* =========================
+     ROUTES
+     ========================= */
+  
+  .routes-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  
+  .routes-heading {
+    margin-bottom: 18px;
+  }
+  
+  .routes-heading h2 {
+    margin: 0 0 5px;
+  
+    color: #111827;
+  
+    font-size: 22px;
+    font-weight: 650;
+    letter-spacing: -0.4px;
+  }
+  
+  .routes-heading p {
+    margin: 0;
+  
+    color: #6b7280;
+  
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  
+  
+  /* =========================
+     ROUTE CARD
+     ========================= */
+  
+  .route-card {
+    position: relative;
+  
+    width: 100%;
+    padding: 15px;
+  
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+  
+    background: #ffffff;
+    color: #374151;
+  
+    text-align: left;
+  
+    cursor: pointer;
+  
+    transition:
+      border-color 0.15s ease,
+      box-shadow 0.15s ease,
+      background-color 0.15s ease,
+      color 0.15s ease;
+  }
+  
+  .route-card:hover {
+    border-color: #cbd5e1;
+    background: #fafafa;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  }
+  
+  
+  /* =========================
+     RECOMMENDED ROUTE
+     ========================= */
+  
+  .route-card.recommended-route {
+    border-color: #111827;
+  }
+  
+  .route-card.recommended-route:hover {
+    border-color: #111827;
+  }
+  
+  
+  /* =========================
+     ALTERNATE ROUTE
+     ========================= */
+  
+  .route-card.alternate-route {
+    color: #374151;
+  }
+  
+  .route-card.alternate-route .route-number {
+    color: #374151;
+  }
+  
+  .route-card.alternate-route .route-detail strong {
+    color: #374151;
+  }
+  
+  
+  /* =========================
+     SELECTED ROUTE
+     ========================= */
+  
+  .route-card.selected-route {
+    border-color: #111827;
+    background: #ffffff;
+    color: #111827;
+    box-shadow: none;
+  }
+  
+  .route-card.selected-route .route-number {
+    color: #111827;
+    font-weight: 650;
+  }
+  
+  .route-card.selected-route .route-detail span {
+    color: #6b7280;
+  }
+  
+  .route-card.selected-route .route-detail strong {
+    color: #111827;
+  }
+  
+  .route-card.selected-route .route-select-text {
+    color: #111827;
+    font-weight: 500;
+  }
+  
+  
+  /* =========================
+     ROUTE HEADER
+     ========================= */
+  
+  .route-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 14px;
+  }
+  
+  .route-title-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  
+  .route-number {
+    color: #374151;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  
+  
+  /* =========================
+     BADGES
+     ========================= */
+  
+  .recommended-badge {
+    margin: 0;
+    padding: 0;
+  
+    background: transparent;
+    color: #6b7280;
+  
+    font-size: 10px;
+    font-weight: 500;
+  }
+  
+  .selected-badge {
+    margin: 0;
+    padding: 0;
+  
+    background: transparent;
+    color: #111827;
+  
+    font-size: 10px;
+    font-weight: 600;
+  }
+  
+  
+  /* =========================
+     ROUTE DETAILS
+     ========================= */
+  
+  .route-details {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+  }
+  
+  .route-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  
+  .route-detail span {
+    color: #9ca3af;
+    font-size: 10px;
+    font-weight: 500;
+  }
+  
+  .route-detail strong {
+    color: #374151;
+    font-size: 13px;
+    font-weight: 600;
+  }
+  
+  
+  /* =========================
+     ROUTE ACTION
+     ========================= */
+  
+  .route-select-text {
+    margin-top: 12px;
+    color: #9ca3af;
+    font-size: 10px;
+  }
+  
+  .route-card:hover .route-select-text {
+    color: #6b7280;
+  }
+  
+  
+  /* =========================
+     SELECTED ROUTE SUMMARY
+     ========================= */
+  
+  .selected-route-info {
+    margin-top: 12px;
+    padding: 12px 0;
+    border-top: 1px solid #e5e7eb;
+  }
+  
+  .selected-route-title {
+    color: #111827;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  
+  .selected-route-description {
+    margin-top: 3px;
+    color: #6b7280;
+    font-size: 10px;
+    line-height: 1.5;
+  }
+  
+  
+  /* =========================
+     EMPTY PANEL
+     ========================= */
+  
+  /* =========================
+     ANALYTICS
+     ========================= */
+  
+  .analytics-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  
+    padding: 12px 0;
+  
+    border-bottom: 1px solid #e5e7eb;
+  }
+  
+  .analytics-card:last-of-type {
+    border-bottom: none;
+  }
+  
+  .analytics-label {
+    flex: 1 1 auto;
+    min-width: 0;
+  
+    color: #6b7280;
+    font-size: 13px;
+    font-weight: 500;
+    text-align: left;
+  }
+  
+  .analytics-hyphen {
+    flex: 0 0 auto;
+  
+    color: #9ca3af;
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1;
+  }
+  
+  .analytics-value {
+    flex: 1 1 auto;
+    min-width: 0;
+  
+    color: #111827;
+    font-size: 13px;
+    font-weight: 650;
+    text-align: right;
+  }
+  
+  
+  .empty-panel {
+    padding: 30px 10px;
+    text-align: center;
+  }
+  
+  .empty-panel p {
+    margin: 0 0 18px;
+    color: #9ca3af;
+    font-size: 13px;
+  }
+  
+  
+  /* =========================
+     MAP
+     ========================= */
+  
+  .map-container {
+    position: relative;
+  
+    flex: 1;
+    min-width: 0;
+  
+    height: 100vh;
+    padding: 14px;
+  }
+  
+  .map-wrapper {
+    position: relative;
+  
+    width: 100%;
+    height: 100%;
+  
+    overflow: hidden;
+  
+    border-radius: 20px;
+  
+    background: #e5e7eb;
+  
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+  }
+  
+  .leaflet-map {
+    width: 100%;
+    height: 100%;
+    z-index: 1;
+  }
+  
+  
+  /* =========================
+     MAP LABEL
+     ========================= */
+  
+  .map-label {
+    position: absolute;
+  
+    top: 28px;
+    left: 28px;
+  
+    z-index: 1000;
+  
+    padding: 9px 13px;
+  
+    border: 1px solid #e5e7eb;
+    border-radius: 10px;
+  
+    background: rgba(255, 255, 255, 0.94);
+  
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.08);
+  
+    color: #111827;
+  
+    font-size: 12px;
+    font-weight: 650;
+  }
+  
+  
+  /* =========================
+     MAP MESSAGE
+     ========================= */
+  
+  .map-message {
+    position: absolute;
+  
+    top: 50%;
+    left: 50%;
+  
+    transform: translate(-50%, -50%);
+  
+    z-index: 500;
+  
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  
+    gap: 6px;
+  
+    padding: 18px 22px;
+  
+    border-radius: 14px;
+  
+    background: rgba(255, 255, 255, 0.94);
+  
+    box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+  
+    text-align: center;
+  }
+  
+  .map-message strong {
+    color: #111827;
+    font-size: 14px;
+  }
+  
+  .map-message span {
+    color: #6b7280;
+    font-size: 12px;
+  }
+  
+  
+  /* =========================
+     MAP ROUTE INFO
+     ========================= */
+  
+  .map-route-info {
+    position: absolute;
+  
+    left: 18px;
+    bottom: 18px;
+  
+    z-index: 1000;
+  
+    padding: 11px 13px;
+  
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+  
+    background: rgba(255, 255, 255, 0.96);
+  
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.08);
+  }
+  
+  .map-route-info-title {
+    color: #111827;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  
+  .map-route-info-details {
+    display: flex;
+    gap: 12px;
+  
+    margin-top: 4px;
+  
+    color: #6b7280;
+    font-size: 10px;
+  }
+  
+  
+  /* =========================
+     LEAFLET
+     ========================= */
+  
+  .leaflet-container {
+    font-family:
+      Inter,
+      system-ui,
+      -apple-system,
+      BlinkMacSystemFont,
+      "Segoe UI",
+      sans-serif;
+  }
+  
+  
+  /* =========================
+     RESPONSIVE
+     ========================= */
+  
+  @media (max-width: 900px) {
+    .app {
+      flex-direction: column;
+      height: auto;
+      min-height: 100vh;
+      overflow: auto;
+    }
+  
+    .sidebar {
+      width: 100%;
+      min-width: 0;
+      height: auto;
+  
+      border-right: none;
+      border-bottom: 1px solid #e5e7eb;
+    }
+  
+    .map-container {
+      height: 600px;
+      min-height: 500px;
+    }
+  
+    .map-wrapper {
+      border-radius: 16px;
+    }
+  }
+  
+  
+  /* =========================
+     SMALL SCREENS
+     ========================= */
+  
+  @media (max-width: 600px) {
+    .sidebar {
+      padding: 20px;
+    }
+  
+    .map-container {
+      height: 500px;
+      min-height: 450px;
+      padding: 10px;
+    }
+  
+    .route-details {
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+  
+    .route-detail strong {
+      font-size: 12px;
+    }
+  
+    .map-label {
+      top: 18px;
+      left: 18px;
+    }
+  
+    .map-route-info {
+      left: 12px;
+      bottom: 12px;
+    }
+  }
