@@ -1,125 +1,120 @@
 const http = require("http");
-const https = require("https");
 
 process.loadEnvFile(".env");
 
 const PORT = 3000;
 
+// ============================================================
+// SERVICES
+// ============================================================
+
+const {
+    geocodePlace
+} = require("./services/geocodingService");
+
+const {
+    getOSRMRoutes,
+    convertOSRMRoute
+} = require("./services/routingService");
+
+const {
+    assessRouteHazards
+} = require("./services/hazardService");
+
+const {
+    calculateSafetyScore
+} = require("./scoring/safetyScore");
+
+// ============================================================
+// OMS - VENDOR SERVICE
+// ============================================================
+
+const vendorService =
+    require("./services/vendorService");
+
+// ============================================================
+// OMS - FLEET / VEHICLE SERVICE
+// ============================================================
+
+const fleetService =
+    require("./services/fleetService");
+
+// ============================================================
+// OMS - SHIPMENT SERVICE
+// ============================================================
+
+const shipmentService =
+    require("./services/shipmentService");
 
 // ============================================================
 // CORS
 // ============================================================
 
 const CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "http://localhost:5173",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type"
-};
+    "Access-Control-Allow-Origin":
+        "http://localhost:5173",
 
+    "Access-Control-Allow-Methods":
+        "GET, POST, PUT, DELETE, OPTIONS",
+
+    "Access-Control-Allow-Headers":
+        "Content-Type"
+};
 
 // ============================================================
 // HTTP HELPERS
 // ============================================================
 
-function getJSON(url) {
-
-    return new Promise((resolve, reject) => {
-
-        https.get(
-            url,
-            {
-                headers: {
-                    "User-Agent": "SIH-Logistics/1.0",
-                    "Accept": "application/json"
-                }
-            },
-            (response) => {
-
-                let data = "";
-
-                response.on(
-                    "data",
-                    chunk => {
-                        data += chunk;
-                    }
-                );
-
-                response.on(
-                    "end",
-                    () => {
-
-                        try {
-
-                            const json =
-                                JSON.parse(data);
-
-                            resolve(json);
-
-                        } catch (error) {
-
-                            reject(
-                                new Error(
-                                    "Invalid JSON response"
-                                )
-                            );
-                        }
-                    }
-                );
-
-            }
-        ).on(
-            "error",
-            reject
-        );
-
-    });
-
-}
-
-
 function readBody(req) {
+    return new Promise(
+        (resolve, reject) => {
 
-    return new Promise((resolve, reject) => {
+            let body = "";
 
-        let body = "";
-
-        req.on(
-            "data",
-            chunk => {
-                body += chunk;
-            }
-        );
-
-        req.on(
-            "end",
-            () => {
-
-                try {
-
-                    resolve(
-                        JSON.parse(body)
-                    );
-
-                } catch (error) {
-
-                    reject(
-                        new Error(
-                            "Invalid JSON body"
-                        )
-                    );
+            req.on(
+                "data",
+                chunk => {
+                    body += chunk;
                 }
-            }
-        );
+            );
 
-        req.on(
-            "error",
-            reject
-        );
+            req.on(
+                "end",
+                () => {
 
-    });
+                    try {
 
+                        if (!body) {
+                            resolve({});
+                            return;
+                        }
+
+                        resolve(
+                            JSON.parse(body)
+                        );
+
+                    } catch (error) {
+
+                        reject(
+                            new Error(
+                                "Invalid JSON body"
+                            )
+                        );
+                    }
+                }
+            );
+
+            req.on(
+                "error",
+                reject
+            );
+        }
+    );
 }
 
+// ============================================================
+// SEND JSON
+// ============================================================
 
 function sendJSON(
     res,
@@ -131,6 +126,7 @@ function sendJSON(
         statusCode,
         {
             ...CORS_HEADERS,
+
             "Content-Type":
                 "application/json"
         }
@@ -139,1150 +135,152 @@ function sendJSON(
     res.end(
         JSON.stringify(data)
     );
-
 }
 
+// ============================================================
+// GET PATH
+// ============================================================
+
+function getPath(url) {
+    return url.split("?")[0];
+}
 
 // ============================================================
-// GEOCODING
+// ROUTE REQUEST VALIDATION
 // ============================================================
 
-async function geocodePlace(place) {
+function validateRouteRequest(body) {
 
-    const apiKey =
-        process.env.ORS_API_KEY;
-
-    if (!apiKey) {
-
-        throw new Error(
-            "ORS_API_KEY is missing from .env"
-        );
+    if (!body.source) {
+        return "Source is required";
     }
 
-    const url =
-        "https://api.openrouteservice.org/geocode/search" +
-        "?api_key=" +
-        encodeURIComponent(apiKey) +
-        "&text=" +
-        encodeURIComponent(place) +
-        "&size=1";
+    if (!body.destination) {
+        return "Destination is required";
+    }
 
-    const data =
-        await getJSON(url);
+    return null;
+}
+
+// ============================================================
+// VENDOR REQUEST VALIDATION
+// ============================================================
+
+function validateVendorRequest(body) {
+
+    if (!body.name) {
+        return "Vendor name is required";
+    }
+
+    if (!body.email) {
+        return "Vendor email is required";
+    }
+
+    return null;
+}
+
+// ============================================================
+// VEHICLE REQUEST VALIDATION
+// ============================================================
+
+function validateVehicleRequest(body) {
+
+    if (!body.registrationNumber) {
+        return "Vehicle registration number is required";
+    }
+
+    if (!body.vehicleType) {
+        return "Vehicle type is required";
+    }
 
     if (
-        !data.features ||
-        data.features.length === 0
+        body.capacity === undefined ||
+        body.capacity === null
     ) {
-
-        throw new Error(
-            `Could not find location: ${place}`
-        );
+        return "Vehicle capacity is required";
     }
 
-    const coordinates =
-        data.features[0].geometry.coordinates;
-
-    return {
-
-        name: place,
-
-        longitude:
-            coordinates[0],
-
-        latitude:
-            coordinates[1]
-
-    };
-
-}
-
-
-// ============================================================
-// DISTANCE CALCULATIONS
-// ============================================================
-
-function haversineDistance(
-    lat1,
-    lon1,
-    lat2,
-    lon2
-) {
-
-    const R = 6371;
-
-    const dLat =
-        (lat2 - lat1) *
-        Math.PI / 180;
-
-    const dLon =
-        (lon2 - lon1) *
-        Math.PI / 180;
-
-    const a =
-        Math.sin(dLat / 2) *
-        Math.sin(dLat / 2) +
-
-        Math.cos(
-            lat1 * Math.PI / 180
-        ) *
-
-        Math.cos(
-            lat2 * Math.PI / 180
-        ) *
-
-        Math.sin(dLon / 2) *
-        Math.sin(dLon / 2);
-
-    const c =
-        2 *
-        Math.atan2(
-            Math.sqrt(a),
-            Math.sqrt(1 - a)
-        );
-
-    return R * c;
-
-}
-
-
-// ============================================================
-// ROUTE DIVERSITY
-// ============================================================
-
-function findNearestDistanceToRoute(
-    point,
-    routeCoordinates
-) {
-
-    let minimumDistance =
-        Infinity;
-
-    for (
-        let i = 0;
-        i < routeCoordinates.length;
-        i++
-    ) {
-
-        const coordinate =
-            routeCoordinates[i];
-
-        const longitude =
-            coordinate[0];
-
-        const latitude =
-            coordinate[1];
-
-        const distance =
-            haversineDistance(
-                point[1],
-                point[0],
-                latitude,
-                longitude
-            );
-
-        if (
-            distance <
-            minimumDistance
-        ) {
-
-            minimumDistance =
-                distance;
-        }
+    if (!body.fuelType) {
+        return "Fuel type is required";
     }
 
-    return minimumDistance;
+    return null;
 }
 
+// ============================================================
+// SHIPMENT REQUEST VALIDATION
+// ============================================================
 
-function calculateRouteDiversity(
-    route,
-    referenceRoute
-) {
+function validateShipmentRequest(body) {
+
+    if (!body.vehicleId) {
+        return "Vehicle ID is required";
+    }
+
+    if (!body.origin) {
+        return "Shipment origin is required";
+    }
+
+    if (!body.destination) {
+        return "Shipment destination is required";
+    }
+
+    if (!body.shipmentType) {
+        return "Shipment type is required";
+    }
 
     if (
-        !route.coordinates ||
-        !referenceRoute.coordinates
+        body.load === undefined ||
+        body.load === null
     ) {
-
-        return {
-            share: 0,
-            diversity: 0,
-            diversityBenefit: 0
-        };
+        return "Shipment load is required";
     }
 
-    const toleranceKm =
-        0.05;
-
-    let sharedPoints = 0;
-
-    for (
-        const point
-        of route.coordinates
-    ) {
-
-        const distance =
-            findNearestDistanceToRoute(
-                point,
-                referenceRoute.coordinates
-            );
-
-        if (
-            distance <= toleranceKm
-        ) {
-
-            sharedPoints++;
-        }
-    }
-
-    const share =
-        route.coordinates.length > 0
-            ? sharedPoints /
-              route.coordinates.length
-            : 1;
-
-    const diversity =
-        Math.max(
-            0,
-            1 - share
-        );
-
-    const diversityBenefit =
-        diversity * 10;
-
-    return {
-
-        share:
-            Number(
-                (share * 100)
-                .toFixed(1)
-            ),
-
-        diversity:
-            Number(
-                (diversity * 100)
-                .toFixed(1)
-            ),
-
-        diversityBenefit:
-            Number(
-                diversityBenefit
-                .toFixed(2)
-            )
-    };
-
+    return null;
 }
 
-
 // ============================================================
-// URGENCY
-// ============================================================
-
-function getUrgencyFactor(
-    urgency
-) {
-
-    switch (
-        String(urgency)
-            .toUpperCase()
-    ) {
-
-        case "LOW":
-            return 0.5;
-
-        case "MEDIUM":
-            return 1.0;
-
-        case "HIGH":
-            return 1.5;
-
-        case "CRITICAL":
-            return 2.0;
-
-        default:
-            return 1.0;
-    }
-
-}
-
-
-// ============================================================
-// ROUTE SCORING
+// NORMALIZE ROUTE
 // ============================================================
 
-function calculateWeightFactor(
+function normalizeRoute(
     route,
-    referenceRoute,
-    urgency
+    routeNumber
 ) {
 
-    const distanceDifference =
-        route.distanceKm -
-        referenceRoute.distanceKm;
-
-    const distancePenalty =
-        referenceRoute.distanceKm > 0
-            ? (
-                distanceDifference /
-                referenceRoute.distanceKm
-            ) * 10
-            : 0;
-
-    const timeDifference =
-        route.durationMin -
-        referenceRoute.durationMin;
-
-    const urgencyFactor =
-        getUrgencyFactor(
-            urgency
-        );
-
-    const timePenalty =
-        referenceRoute.durationMin > 0
-            ? (
-                timeDifference /
-                referenceRoute.durationMin
-            ) *
-            10 *
-            urgencyFactor
-            : 0;
-
-    return Number(
-        (
-            Math.max(
-                0,
-                distancePenalty
-            ) +
-
-            Math.max(
-                0,
-                timePenalty
-            )
-        ).toFixed(2)
-    );
-
-}
-
-
-function calculateRawScore(
-    route,
-    referenceRoute,
-    urgency
-) {
-
-    const weightFactor =
-        calculateWeightFactor(
-            route,
-            referenceRoute,
-            urgency
-        );
-
-    const diversity =
-        calculateRouteDiversity(
-            route,
-            referenceRoute
-        );
-
-    const diversityBenefit =
-        diversity.diversityBenefit;
-
-    const rawScore =
-        weightFactor -
-        (
-            diversityBenefit *
-            0.30
-        );
+    const converted =
+        convertOSRMRoute(route);
 
     return {
 
-        weightFactor,
-
-        rawScore:
-            Number(
-                Math.max(
-                    0,
-                    rawScore
-                ).toFixed(2)
-            ),
-
-        share:
-            diversity.share,
-
-        diversity:
-            diversity.diversity,
-
-        diversityBenefit
-
-    };
-
-}
-
-
-function calculateSafetyScore(
-    rawScore
-) {
-
-    return Number(
-        Math.max(
-            0,
-            Math.min(
-                100,
-                100 - rawScore
-            )
-        ).toFixed(2)
-    );
-
-}
-
-
-// ============================================================
-// CONVERT OSRM ROUTE
-// ============================================================
-
-function convertOSRMRoute(
-    route
-) {
-
-    return {
+        routeNumber,
 
         distanceKm:
-            route.distance /
-            1000,
+            Number(
+                converted.distanceKm.toFixed(2)
+            ),
 
         durationMin:
-            route.duration /
-            60,
+            Number(
+                converted.durationMin.toFixed(2)
+            ),
 
         coordinates:
-            route.geometry?.coordinates ||
-            [],
+            converted.coordinates,
 
         distanceMeters:
-            route.distance,
+            converted.distanceMeters,
 
         durationSeconds:
-            route.duration
+            converted.durationSeconds,
 
+        safetyScore: null,
+
+        hazardRisk: null,
+
+        hazardDetails: null
     };
-
 }
-
-
-// ============================================================
-// NEW: GENERATE WAYPOINTS
-// ============================================================
-
-function generateAlternativeWaypoints(
-    source,
-    destination
-) {
-
-    const sourceLat =
-        source.latitude;
-
-    const sourceLon =
-        source.longitude;
-
-    const destinationLat =
-        destination.latitude;
-
-    const destinationLon =
-        destination.longitude;
-
-
-    // Midpoint between source and destination
-
-    const midLat =
-        (
-            sourceLat +
-            destinationLat
-        ) / 2;
-
-    const midLon =
-        (
-            sourceLon +
-            destinationLon
-        ) / 2;
-
-
-    // Difference between coordinates
-
-    const deltaLat =
-        destinationLat -
-        sourceLat;
-
-    const deltaLon =
-        destinationLon -
-        sourceLon;
-
-
-    // Calculate perpendicular direction
-
-    const length =
-        Math.sqrt(
-            deltaLat * deltaLat +
-            deltaLon * deltaLon
-        );
-
-
-    if (length === 0) {
-
-        return [];
-
-    }
-
-
-    const perpendicularLat =
-        -deltaLon / length;
-
-    const perpendicularLon =
-        deltaLat / length;
-
-
-    /*
-        Offset size.
-
-        Around 0.12 degrees gives
-        a meaningful detour for
-        North-East India distances.
-
-        We keep it relatively small
-        so routes don't become
-        unnecessarily huge.
-    */
-
-    const offset =
-        0.12;
-
-
-    const waypointNorth = {
-
-        latitude:
-            midLat +
-            (
-                perpendicularLat *
-                offset
-            ),
-
-        longitude:
-            midLon +
-            (
-                perpendicularLon *
-                offset
-            )
-
-    };
-
-
-    const waypointSouth = {
-
-        latitude:
-            midLat -
-            (
-                perpendicularLat *
-                offset
-            ),
-
-        longitude:
-            midLon -
-            (
-                perpendicularLon *
-                offset
-            )
-
-    };
-
-
-    return [
-
-        waypointNorth,
-
-        waypointSouth
-
-    ];
-
-}
-
-
-// ============================================================
-// OSRM ROUTING
-// ============================================================
-
-async function getSingleOSRMRoute(
-    coordinates
-) {
-
-    const coordinateString =
-        coordinates
-            .map(
-                point =>
-                    `${point.longitude},${point.latitude}`
-            )
-            .join(";");
-
-
-    const url =
-        "https://router.project-osrm.org/route/v1/driving/" +
-        coordinateString +
-
-        "?overview=full" +
-
-        "&geometries=geojson" +
-
-        "&steps=true" +
-
-        "&annotations=true";
-
-
-    const data =
-        await getJSON(url);
-
-
-    if (
-        data.code !== "Ok" ||
-        !data.routes ||
-        data.routes.length === 0
-    ) {
-
-        return null;
-
-    }
-
-
-    return data.routes[0];
-
-}
-
-
-// ============================================================
-// GET MULTIPLE ROUTES
-// ============================================================
-
-async function getOSRMRoutes(
-    source,
-    destination
-) {
-
-    console.log("");
-    console.log(
-        "========== ROUTE GENERATION =========="
-    );
-
-
-    // --------------------------------------------------------
-    // ROUTE 1
-    // Direct route
-    // --------------------------------------------------------
-
-    console.log(
-        "Generating Route 1..."
-    );
-
-
-    const directRoute =
-        await getSingleOSRMRoute(
-            [
-                source,
-                destination
-            ]
-        );
-
-
-    const routes = [];
-
-
-    if (directRoute) {
-
-        routes.push(
-            directRoute
-        );
-
-        console.log(
-            "Route 1 generated successfully"
-        );
-
-    }
-
-
-    // --------------------------------------------------------
-    // Generate alternative waypoints
-    // --------------------------------------------------------
-
-    const waypoints =
-        generateAlternativeWaypoints(
-            source,
-            destination
-        );
-
-
-    // --------------------------------------------------------
-    // ROUTE 2
-    // Via first waypoint
-    // --------------------------------------------------------
-
-    if (
-        waypoints[0]
-    ) {
-
-        console.log(
-            "Generating Route 2..."
-        );
-
-
-        const route2 =
-            await getSingleOSRMRoute(
-                [
-                    source,
-
-                    {
-                        latitude:
-                            waypoints[0].latitude,
-
-                        longitude:
-                            waypoints[0].longitude
-                    },
-
-                    destination
-                ]
-            );
-
-
-        if (route2) {
-
-            routes.push(
-                route2
-            );
-
-            console.log(
-                "Route 2 generated successfully"
-            );
-
-        } else {
-
-            console.log(
-                "Route 2 could not be generated"
-            );
-
-        }
-
-    }
-
-
-    // --------------------------------------------------------
-    // ROUTE 3
-    // Via second waypoint
-    // --------------------------------------------------------
-
-    if (
-        waypoints[1]
-    ) {
-
-        console.log(
-            "Generating Route 3..."
-        );
-
-
-        const route3 =
-            await getSingleOSRMRoute(
-                [
-                    source,
-
-                    {
-                        latitude:
-                            waypoints[1].latitude,
-
-                        longitude:
-                            waypoints[1].longitude
-                    },
-
-                    destination
-                ]
-            );
-
-
-        if (route3) {
-
-            routes.push(
-                route3
-            );
-
-            console.log(
-                "Route 3 generated successfully"
-            );
-
-        } else {
-
-            console.log(
-                "Route 3 could not be generated"
-            );
-
-        }
-
-    }
-
-
-    // --------------------------------------------------------
-    // DEBUG
-    // --------------------------------------------------------
-
-    console.log("");
-
-    console.log(
-        "TOTAL GENERATED ROUTES:",
-        routes.length
-    );
-
-
-    console.log(
-        "ROUTE DISTANCES:",
-        routes.map(
-            route =>
-                (
-                    route.distance /
-                    1000
-                ).toFixed(2) +
-                " km"
-        )
-    );
-
-
-    console.log(
-        "ROUTE DURATIONS:",
-        routes.map(
-            route =>
-                (
-                    route.duration /
-                    60
-                ).toFixed(2) +
-                " min"
-        )
-    );
-
-
-    console.log(
-        "======================================"
-    );
-
-    console.log("");
-
-
-    if (
-        routes.length === 0
-    ) {
-
-        throw new Error(
-            "OSRM could not find any route"
-        );
-
-    }
-
-
-    return routes;
-
-}
-
-
-// ============================================================
-// PROCESS ROUTES
-// ============================================================
-
-function processRoutes(
-    osrmRoutes,
-    urgency
-) {
-
-    const convertedRoutes =
-        osrmRoutes.map(
-            route =>
-                convertOSRMRoute(
-                    route
-                )
-        );
-
-
-    if (
-        convertedRoutes.length === 0
-    ) {
-
-        return [];
-
-    }
-
-
-    // First route = reference route
-
-    const referenceRoute =
-        convertedRoutes[0];
-
-
-    const processedRoutes =
-        convertedRoutes.map(
-            (
-                route,
-                index
-            ) => {
-
-                const routeNumber =
-                    index + 1;
-
-
-                // Reference route
-
-                if (
-                    index === 0
-                ) {
-
-                    return {
-
-                        routeNumber,
-
-                        distanceKm:
-                            Number(
-                                route.distanceKm
-                                    .toFixed(2)
-                            ),
-
-                        durationMin:
-                            Number(
-                                route.durationMin
-                                    .toFixed(2)
-                            ),
-
-                        coordinates:
-                            route.coordinates,
-
-                        distanceMeters:
-                            route.distanceMeters,
-
-                        durationSeconds:
-                            route.durationSeconds,
-
-                        share: 100,
-
-                        diversity: 0,
-
-                        diversityBenefit: 0,
-
-                        weightFactor: 0,
-
-                        rawScore: 0,
-
-                        safetyScore: 100
-
-                    };
-
-                }
-
-
-                // Alternative routes
-
-                const scoring =
-                    calculateRawScore(
-                        route,
-                        referenceRoute,
-                        urgency
-                    );
-
-
-                return {
-
-                    routeNumber,
-
-                    distanceKm:
-                        Number(
-                            route.distanceKm
-                                .toFixed(2)
-                        ),
-
-                    durationMin:
-                        Number(
-                            route.durationMin
-                                .toFixed(2)
-                        ),
-
-                    coordinates:
-                        route.coordinates,
-
-                    distanceMeters:
-                        route.distanceMeters,
-
-                    durationSeconds:
-                        route.durationSeconds,
-
-                    share:
-                        scoring.share,
-
-                    diversity:
-                        scoring.diversity,
-
-                    diversityBenefit:
-                        scoring.diversityBenefit,
-
-                    weightFactor:
-                        scoring.weightFactor,
-
-                    rawScore:
-                        scoring.rawScore,
-
-                    safetyScore:
-                        calculateSafetyScore(
-                            scoring.rawScore
-                        )
-
-                };
-
-            }
-        );
-
-
-    return processedRoutes;
-
-}
-
-
-// ============================================================
-// SELECT BEST ROUTE
-// ============================================================
-
-function selectBestRoute(
-    routes
-) {
-
-    if (
-        !routes ||
-        routes.length === 0
-    ) {
-
-        return null;
-
-    }
-
-
-    return routes.reduce(
-        (
-            best,
-            current
-        ) => {
-
-            if (
-                current.safetyScore >
-                best.safetyScore
-            ) {
-
-                return current;
-
-            }
-
-            return best;
-
-        }
-    );
-
-}
-
-
-// ============================================================
-// PRINT RESULT
-// ============================================================
-
-function printFinalResult(
-    routes,
-    bestRoute
-) {
-
-    console.log("");
-    console.log(
-        "================================================"
-    );
-
-    console.log(
-        "             SIH LOGISTICS RESULT"
-    );
-
-    console.log(
-        "================================================"
-    );
-
-
-    console.log("");
-    console.log(
-        "**************** BEST ROUTE ****************"
-    );
-
-    console.log(
-        "Route Number       :",
-        bestRoute.routeNumber
-    );
-
-    console.log(
-        "Distance           :",
-        bestRoute.distanceKm,
-        "km"
-    );
-
-    console.log(
-        "Estimated Time     :",
-        bestRoute.durationMin,
-        "min"
-    );
-
-    console.log(
-        "Safety Score       :",
-        `${bestRoute.safetyScore}/100`
-    );
-
-    console.log(
-        "Raw Risk Penalty   :",
-        bestRoute.rawScore
-    );
-
-
-    console.log("");
-    console.log(
-        "**************** ALTERNATIVE ROUTES ****************"
-    );
-
-
-    routes.forEach(
-        route => {
-
-            console.log(
-                `Route ${route.routeNumber} : ` +
-                `${route.distanceKm} km | ` +
-                `${route.durationMin} min | ` +
-                `Safety ${route.safetyScore}/100`
-            );
-
-        }
-    );
-
-
-    console.log("");
-    console.log(
-        "================================================"
-    );
-
-    console.log(
-        "RECOMMENDED ROUTE :",
-        `Route ${bestRoute.routeNumber}`
-    );
-
-    console.log(
-        "SAFETY SCORE      :",
-        `${bestRoute.safetyScore}/100`
-    );
-
-    console.log(
-        "Higher safety score = safer route"
-    );
-
-    console.log(
-        "================================================"
-    );
-
-}
-
 
 // ============================================================
 // FIND ROUTE HANDLER
@@ -1298,39 +296,48 @@ async function handleFindRoute(
         const body =
             await readBody(req);
 
+        console.log("");
+
+        console.log(
+            "================================================"
+        );
+
+        console.log(
+            "        INCOMING ROUTE REQUEST"
+        );
+
+        console.log(
+            "================================================"
+        );
+
+        console.log(body);
 
         console.log("");
-        console.log(
-            "Incoming shipment request:"
-        );
-
-        console.log(
-            body
-        );
-
 
         // ----------------------------------------------------
         // VALIDATION
         // ----------------------------------------------------
 
-        if (
-            !body.source ||
-            !body.destination
-        ) {
+        const validationError =
+            validateRouteRequest(body);
+
+        if (validationError) {
 
             sendJSON(
                 res,
                 400,
                 {
                     error:
-                        "Source and destination are required"
+                        validationError
                 }
             );
 
             return;
-
         }
 
+        // ----------------------------------------------------
+        // REQUEST PARAMETERS
+        // ----------------------------------------------------
 
         const urgency =
             String(
@@ -1338,48 +345,55 @@ async function handleFindRoute(
                 "MEDIUM"
             ).toUpperCase();
 
+        const vehicle =
+            body.vehicle ||
+            null;
+
+        const shipment =
+            body.shipment ||
+            null;
 
         // ----------------------------------------------------
-        // GEOCODE
+        // GEOCODING
         // ----------------------------------------------------
 
         console.log(
             "Geocoding source..."
         );
 
-
         const source =
             await geocodePlace(
                 body.source
             );
-
 
         console.log(
             "Source:",
             source
         );
 
-
         console.log(
             "Geocoding destination..."
         );
-
 
         const destination =
             await geocodePlace(
                 body.destination
             );
 
-
         console.log(
             "Destination:",
             destination
         );
 
+        // ----------------------------------------------------
+        // GENERATE CANDIDATE ROUTES
+        // ----------------------------------------------------
 
-        // ----------------------------------------------------
-        // GET ROUTES
-        // ----------------------------------------------------
+        console.log("");
+
+        console.log(
+            "Generating candidate routes..."
+        );
 
         const osrmRoutes =
             await getOSRMRoutes(
@@ -1387,42 +401,108 @@ async function handleFindRoute(
                 destination
             );
 
+        console.log(
+            "Candidate routes generated:",
+            osrmRoutes.length
+        );
 
         // ----------------------------------------------------
-        // PROCESS / SCORE
+        // NORMALIZE ROUTES
         // ----------------------------------------------------
 
         const routes =
-            processRoutes(
-                osrmRoutes,
-                urgency
+            osrmRoutes.map(
+                (route, index) =>
+                    normalizeRoute(
+                        route,
+                        index + 1
+                    )
             );
 
+        // ----------------------------------------------------
+        // HAZARD ASSESSMENT
+        // ----------------------------------------------------
+
+        console.log("");
 
         console.log(
-            "Processed routes:",
-            routes.length
+            "Assessing environmental hazards..."
         );
 
+        const assessedRoutes = [];
+
+        for (
+            const route of routes
+        ) {
+
+            const hazard =
+                await assessRouteHazards(
+                    route,
+                    source,
+                    destination
+                );
+
+            const safetyScore =
+                calculateSafetyScore(
+                    hazard
+                );
+
+            assessedRoutes.push({
+
+                ...route,
+
+                safetyScore,
+
+                hazardRisk:
+                    hazard.overallRisk,
+
+                hazardDetails: {
+
+                    rainfall:
+                        hazard.rainfall,
+
+                    floodRisk:
+                        hazard.floodRisk,
+
+                    landslideRisk:
+                        hazard.landslideRisk,
+
+                    stormRisk:
+                        hazard.stormRisk,
+
+                    disasterRisk:
+                        hazard.disasterRisk,
+
+                    overallRisk:
+                        hazard.overallRisk
+                }
+            });
+        }
 
         // ----------------------------------------------------
-        // BEST ROUTE
+        // TEMPORARY ROUTE SELECTION
         // ----------------------------------------------------
+
+        // This will eventually be replaced by Python ACO.
+        //
+        // Safety remains independent from distance and ETA.
 
         const bestRoute =
-            selectBestRoute(
-                routes
+            selectBestSafetyRoute(
+                assessedRoutes
             );
 
+        // ----------------------------------------------------
+        // PRINT RESULT
+        // ----------------------------------------------------
 
         printFinalResult(
-            routes,
+            assessedRoutes,
             bestRoute
         );
 
-
         // ----------------------------------------------------
-        // SEND RESPONSE
+        // RESPONSE
         // ----------------------------------------------------
 
         sendJSON(
@@ -1430,36 +510,48 @@ async function handleFindRoute(
             200,
             {
 
+                requestId:
+                    `REQ-${Date.now()}`,
+
                 source,
 
                 destination,
 
                 urgency,
 
+                vehicle,
+
+                shipment,
+
                 routeCount:
-                    routes.length,
+                    assessedRoutes.length,
 
-                bestRoute: {
+                bestRoute:
+                    bestRoute
+                        ? {
 
-                    routeNumber:
-                        bestRoute.routeNumber,
+                            routeNumber:
+                                bestRoute.routeNumber,
 
-                    distanceKm:
-                        bestRoute.distanceKm,
+                            distanceKm:
+                                bestRoute.distanceKm,
 
-                    durationMin:
-                        bestRoute.durationMin,
+                            durationMin:
+                                bestRoute.durationMin,
 
-                    safetyScore:
-                        bestRoute.safetyScore
+                            safetyScore:
+                                bestRoute.safetyScore,
 
-                },
+                            hazardRisk:
+                                bestRoute.hazardRisk
+                        }
 
-                routes
+                        : null,
 
+                routes:
+                    assessedRoutes
             }
         );
-
 
     } catch (error) {
 
@@ -1467,7 +559,6 @@ async function handleFindRoute(
             "FIND ROUTE ERROR:",
             error
         );
-
 
         sendJSON(
             res,
@@ -1477,14 +568,1490 @@ async function handleFindRoute(
                 error:
                     error.message ||
                     "Failed to find route"
+            }
+        );
+    }
+}
 
+// ============================================================
+// CREATE VENDOR HANDLER
+// ============================================================
+
+async function handleCreateVendor(
+    req,
+    res
+) {
+
+    try {
+
+        const body =
+            await readBody(req);
+
+        console.log("");
+
+        console.log(
+            "================================================"
+        );
+
+        console.log(
+            "          CREATE VENDOR REQUEST"
+        );
+
+        console.log(
+            "================================================"
+        );
+
+        console.log(body);
+
+        console.log("");
+
+        // ----------------------------------------------------
+        // VALIDATION
+        // ----------------------------------------------------
+
+        const validationError =
+            validateVendorRequest(body);
+
+        if (validationError) {
+
+            sendJSON(
+                res,
+                400,
+                {
+                    error:
+                        validationError
+                }
+            );
+
+            return;
+        }
+
+        // ----------------------------------------------------
+        // CREATE VENDOR
+        // ----------------------------------------------------
+
+        const vendor =
+            vendorService.createVendor(
+                body
+            );
+
+        console.log(
+            "Vendor created:",
+            vendor
+        );
+
+        // ----------------------------------------------------
+        // RESPONSE
+        // ----------------------------------------------------
+
+        sendJSON(
+            res,
+            201,
+            {
+
+                message:
+                    "Vendor created successfully",
+
+                vendor
             }
         );
 
-    }
+    } catch (error) {
 
+        console.error(
+            "CREATE VENDOR ERROR:",
+            error
+        );
+
+        sendJSON(
+            res,
+            400,
+            {
+
+                error:
+                    error.message ||
+                    "Failed to create vendor"
+            }
+        );
+    }
 }
 
+// ============================================================
+// GET ALL VENDORS
+// ============================================================
+
+function handleGetAllVendors(
+    req,
+    res
+) {
+
+    try {
+
+        const vendors =
+            vendorService.getAllVendors();
+
+        sendJSON(
+            res,
+            200,
+            {
+
+                count:
+                    vendors.length,
+
+                vendors
+            }
+        );
+
+    } catch (error) {
+
+        console.error(
+            "GET VENDORS ERROR:",
+            error
+        );
+
+        sendJSON(
+            res,
+            500,
+            {
+                error:
+                    "Failed to retrieve vendors"
+            }
+        );
+    }
+}
+
+// ============================================================
+// GET SINGLE VENDOR
+// ============================================================
+
+function handleGetVendor(
+    req,
+    res,
+    vendorId
+) {
+
+    try {
+
+        const vendor =
+            vendorService.getVendor(
+                vendorId
+            );
+
+        if (!vendor) {
+
+            sendJSON(
+                res,
+                404,
+                {
+                    error:
+                        "Vendor not found"
+                }
+            );
+
+            return;
+        }
+
+        sendJSON(
+            res,
+            200,
+            {
+                vendor
+            }
+        );
+
+    } catch (error) {
+
+        console.error(
+            "GET VENDOR ERROR:",
+            error
+        );
+
+        sendJSON(
+            res,
+            500,
+            {
+                error:
+                    "Failed to retrieve vendor"
+            }
+        );
+    }
+}
+
+// ============================================================
+// UPDATE VENDOR
+// ============================================================
+
+async function handleUpdateVendor(
+    req,
+    res,
+    vendorId
+) {
+
+    try {
+
+        const body =
+            await readBody(req);
+
+        const vendor =
+            vendorService.updateVendor(
+                vendorId,
+                body
+            );
+
+        if (!vendor) {
+
+            sendJSON(
+                res,
+                404,
+                {
+                    error:
+                        "Vendor not found"
+                }
+            );
+
+            return;
+        }
+
+        sendJSON(
+            res,
+            200,
+            {
+
+                message:
+                    "Vendor updated successfully",
+
+                vendor
+            }
+        );
+
+    } catch (error) {
+
+        console.error(
+            "UPDATE VENDOR ERROR:",
+            error
+        );
+
+        sendJSON(
+            res,
+            400,
+            {
+
+                error:
+                    error.message ||
+                    "Failed to update vendor"
+            }
+        );
+    }
+}
+
+// ============================================================
+// DELETE VENDOR
+// ============================================================
+
+function handleDeleteVendor(
+    req,
+    res,
+    vendorId
+) {
+
+    try {
+
+        const deleted =
+            vendorService.deleteVendor(
+                vendorId
+            );
+
+        if (!deleted) {
+
+            sendJSON(
+                res,
+                404,
+                {
+                    error:
+                        "Vendor not found"
+                }
+            );
+
+            return;
+        }
+
+        sendJSON(
+            res,
+            200,
+            {
+
+                message:
+                    "Vendor deleted successfully",
+
+                vendorId
+            }
+        );
+
+    } catch (error) {
+
+        console.error(
+            "DELETE VENDOR ERROR:",
+            error
+        );
+
+        sendJSON(
+            res,
+            500,
+            {
+                error:
+                    "Failed to delete vendor"
+            }
+        );
+    }
+}
+
+// ============================================================
+// CREATE VEHICLE
+// ============================================================
+
+async function handleCreateVehicle(
+    req,
+    res,
+    vendorId
+) {
+
+    try {
+
+        // ----------------------------------------------------
+        // CHECK VENDOR
+        // ----------------------------------------------------
+
+        const vendor =
+            vendorService.getVendor(
+                vendorId
+            );
+
+        if (!vendor) {
+
+            sendJSON(
+                res,
+                404,
+                {
+                    error:
+                        "Vendor not found"
+                }
+            );
+
+            return;
+        }
+
+        // ----------------------------------------------------
+        // READ BODY
+        // ----------------------------------------------------
+
+        const body =
+            await readBody(req);
+
+        // ----------------------------------------------------
+        // VALIDATION
+        // ----------------------------------------------------
+
+        const validationError =
+            validateVehicleRequest(body);
+
+        if (validationError) {
+
+            sendJSON(
+                res,
+                400,
+                {
+                    error:
+                        validationError
+                }
+            );
+
+            return;
+        }
+
+        // ----------------------------------------------------
+        // CREATE VEHICLE
+        // ----------------------------------------------------
+
+        const vehicle =
+            fleetService.createVehicle(
+                vendorId,
+                body
+            );
+
+        console.log("");
+
+        console.log(
+            "Vehicle created:",
+            vehicle
+        );
+
+        // ----------------------------------------------------
+        // RESPONSE
+        // ----------------------------------------------------
+
+        sendJSON(
+            res,
+            201,
+            {
+
+                message:
+                    "Vehicle created successfully",
+
+                vehicle
+            }
+        );
+
+    } catch (error) {
+
+        console.error(
+            "CREATE VEHICLE ERROR:",
+            error
+        );
+
+        sendJSON(
+            res,
+            400,
+            {
+
+                error:
+                    error.message ||
+                    "Failed to create vehicle"
+            }
+        );
+    }
+}
+
+// ============================================================
+// GET VENDOR VEHICLES
+// ============================================================
+
+function handleGetVendorVehicles(
+    req,
+    res,
+    vendorId
+) {
+
+    try {
+
+        // ----------------------------------------------------
+        // CHECK VENDOR
+        // ----------------------------------------------------
+
+        const vendor =
+            vendorService.getVendor(
+                vendorId
+            );
+
+        if (!vendor) {
+
+            sendJSON(
+                res,
+                404,
+                {
+                    error:
+                        "Vendor not found"
+                }
+            );
+
+            return;
+        }
+
+        // ----------------------------------------------------
+        // GET VEHICLES
+        // ----------------------------------------------------
+
+        const vehicles =
+            fleetService.getVendorVehicles(
+                vendorId
+            );
+
+        // ----------------------------------------------------
+        // RESPONSE
+        // ----------------------------------------------------
+
+        sendJSON(
+            res,
+            200,
+            {
+
+                vendorId,
+
+                count:
+                    vehicles.length,
+
+                vehicles
+            }
+        );
+
+    } catch (error) {
+
+        console.error(
+            "GET VENDOR VEHICLES ERROR:",
+            error
+        );
+
+        sendJSON(
+            res,
+            500,
+            {
+                error:
+                    "Failed to retrieve vendor vehicles"
+            }
+        );
+    }
+}
+
+// ============================================================
+// GET SINGLE VEHICLE
+// ============================================================
+
+function handleGetVehicle(
+    req,
+    res,
+    vehicleId
+) {
+
+    try {
+
+        const vehicle =
+            fleetService.getVehicle(
+                vehicleId
+            );
+
+        if (!vehicle) {
+
+            sendJSON(
+                res,
+                404,
+                {
+                    error:
+                        "Vehicle not found"
+                }
+            );
+
+            return;
+        }
+
+        sendJSON(
+            res,
+            200,
+            {
+                vehicle
+            }
+        );
+
+    } catch (error) {
+
+        console.error(
+            "GET VEHICLE ERROR:",
+            error
+        );
+
+        sendJSON(
+            res,
+            500,
+            {
+                error:
+                    "Failed to retrieve vehicle"
+            }
+        );
+    }
+}
+
+// ============================================================
+// UPDATE VEHICLE
+// ============================================================
+
+async function handleUpdateVehicle(
+    req,
+    res,
+    vehicleId
+) {
+
+    try {
+
+        const body =
+            await readBody(req);
+
+        const vehicle =
+            fleetService.updateVehicle(
+                vehicleId,
+                body
+            );
+
+        if (!vehicle) {
+
+            sendJSON(
+                res,
+                404,
+                {
+                    error:
+                        "Vehicle not found"
+                }
+            );
+
+            return;
+        }
+
+        sendJSON(
+            res,
+            200,
+            {
+
+                message:
+                    "Vehicle updated successfully",
+
+                vehicle
+            }
+        );
+
+    } catch (error) {
+
+        console.error(
+            "UPDATE VEHICLE ERROR:",
+            error
+        );
+
+        sendJSON(
+            res,
+            400,
+            {
+
+                error:
+                    error.message ||
+                    "Failed to update vehicle"
+            }
+        );
+    }
+}
+
+// ============================================================
+// DELETE VEHICLE
+// ============================================================
+
+function handleDeleteVehicle(
+    req,
+    res,
+    vehicleId
+) {
+
+    try {
+
+        const deleted =
+            fleetService.deleteVehicle(
+                vehicleId
+            );
+
+        if (!deleted) {
+
+            sendJSON(
+                res,
+                404,
+                {
+                    error:
+                        "Vehicle not found"
+                }
+            );
+
+            return;
+        }
+
+        sendJSON(
+            res,
+            200,
+            {
+
+                message:
+                    "Vehicle deleted successfully",
+
+                vehicleId
+            }
+        );
+
+    } catch (error) {
+
+        console.error(
+            "DELETE VEHICLE ERROR:",
+            error
+        );
+
+        sendJSON(
+            res,
+            500,
+            {
+                error:
+                    "Failed to delete vehicle"
+            }
+        );
+    }
+}
+
+// ============================================================
+// CREATE SHIPMENT
+// ============================================================
+
+async function handleCreateShipment(
+    req,
+    res,
+    vendorId
+) {
+
+    try {
+
+        // ----------------------------------------------------
+        // CHECK VENDOR
+        // ----------------------------------------------------
+
+        const vendor =
+            vendorService.getVendor(
+                vendorId
+            );
+
+        if (!vendor) {
+
+            sendJSON(
+                res,
+                404,
+                {
+                    error:
+                        "Vendor not found"
+                }
+            );
+
+            return;
+        }
+
+        // ----------------------------------------------------
+        // READ BODY
+        // ----------------------------------------------------
+
+        const body =
+            await readBody(req);
+
+        // ----------------------------------------------------
+        // VALIDATION
+        // ----------------------------------------------------
+
+        const validationError =
+            validateShipmentRequest(body);
+
+        if (validationError) {
+
+            sendJSON(
+                res,
+                400,
+                {
+                    error:
+                        validationError
+                }
+            );
+
+            return;
+        }
+
+        // ----------------------------------------------------
+        // CHECK VEHICLE
+        // ----------------------------------------------------
+
+        const vehicle =
+            fleetService.getVehicle(
+                body.vehicleId
+            );
+
+        if (!vehicle) {
+
+            sendJSON(
+                res,
+                404,
+                {
+                    error:
+                        "Vehicle not found"
+                }
+            );
+
+            return;
+        }
+
+        // ----------------------------------------------------
+        // CHECK VEHICLE OWNERSHIP
+        // ----------------------------------------------------
+
+        if (
+            vehicle.vendorId !==
+            vendorId
+        ) {
+
+            sendJSON(
+                res,
+                403,
+                {
+                    error:
+                        "Vehicle does not belong to this vendor"
+                }
+            );
+
+            return;
+        }
+
+        // ----------------------------------------------------
+        // CHECK VEHICLE STATUS
+        // ----------------------------------------------------
+
+        if (
+            vehicle.status !==
+            "ACTIVE"
+        ) {
+
+            sendJSON(
+                res,
+                400,
+                {
+                    error:
+                        "Vehicle is not available for shipment"
+                }
+            );
+
+            return;
+        }
+
+        // ----------------------------------------------------
+        // CHECK LOAD AGAINST CAPACITY
+        // ----------------------------------------------------
+
+        const shipmentLoad =
+            Number(body.load);
+
+        if (
+            shipmentLoad >
+            vehicle.capacity
+        ) {
+
+            sendJSON(
+                res,
+                400,
+                {
+
+                    error:
+                        "Shipment load exceeds vehicle capacity",
+
+                    vehicleCapacity:
+                        vehicle.capacity,
+
+                    shipmentLoad
+                }
+            );
+
+            return;
+        }
+
+        // ----------------------------------------------------
+        // CREATE SHIPMENT
+        // ----------------------------------------------------
+
+        const shipment =
+            shipmentService.createShipment(
+                vendorId,
+                body.vehicleId,
+                body
+            );
+
+        console.log("");
+
+        console.log(
+            "Shipment created:",
+            shipment
+        );
+
+        // ----------------------------------------------------
+        // RESPONSE
+        // ----------------------------------------------------
+
+        sendJSON(
+            res,
+            201,
+            {
+
+                message:
+                    "Shipment created successfully",
+
+                shipment
+            }
+        );
+
+    } catch (error) {
+
+        console.error(
+            "CREATE SHIPMENT ERROR:",
+            error
+        );
+
+        sendJSON(
+            res,
+            400,
+            {
+
+                error:
+                    error.message ||
+                    "Failed to create shipment"
+            }
+        );
+    }
+}
+
+// ============================================================
+// GET VENDOR SHIPMENTS
+// ============================================================
+
+function handleGetVendorShipments(
+    req,
+    res,
+    vendorId
+) {
+
+    try {
+
+        // ----------------------------------------------------
+        // CHECK VENDOR
+        // ----------------------------------------------------
+
+        const vendor =
+            vendorService.getVendor(
+                vendorId
+            );
+
+        if (!vendor) {
+
+            sendJSON(
+                res,
+                404,
+                {
+                    error:
+                        "Vendor not found"
+                }
+            );
+
+            return;
+        }
+
+        // ----------------------------------------------------
+        // GET SHIPMENTS
+        // ----------------------------------------------------
+
+        const shipments =
+            shipmentService.getVendorShipments(
+                vendorId
+            );
+
+        // ----------------------------------------------------
+        // RESPONSE
+        // ----------------------------------------------------
+
+        sendJSON(
+            res,
+            200,
+            {
+
+                vendorId,
+
+                count:
+                    shipments.length,
+
+                shipments
+            }
+        );
+
+    } catch (error) {
+
+        console.error(
+            "GET VENDOR SHIPMENTS ERROR:",
+            error
+        );
+
+        sendJSON(
+            res,
+            500,
+            {
+                error:
+                    "Failed to retrieve vendor shipments"
+            }
+        );
+    }
+}
+
+// ============================================================
+// GET SINGLE SHIPMENT
+// ============================================================
+
+function handleGetShipment(
+    req,
+    res,
+    shipmentId
+) {
+
+    try {
+
+        const shipment =
+            shipmentService.getShipment(
+                shipmentId
+            );
+
+        if (!shipment) {
+
+            sendJSON(
+                res,
+                404,
+                {
+                    error:
+                        "Shipment not found"
+                }
+            );
+
+            return;
+        }
+
+        sendJSON(
+            res,
+            200,
+            {
+                shipment
+            }
+        );
+
+    } catch (error) {
+
+        console.error(
+            "GET SHIPMENT ERROR:",
+            error
+        );
+
+        sendJSON(
+            res,
+            500,
+            {
+                error:
+                    "Failed to retrieve shipment"
+            }
+        );
+    }
+}
+
+// ============================================================
+// UPDATE SHIPMENT
+// ============================================================
+
+async function handleUpdateShipment(
+    req,
+    res,
+    shipmentId
+) {
+
+    try {
+
+        const existingShipment =
+            shipmentService.getShipment(
+                shipmentId
+            );
+
+        if (!existingShipment) {
+
+            sendJSON(
+                res,
+                404,
+                {
+                    error:
+                        "Shipment not found"
+                }
+            );
+
+            return;
+        }
+
+        const body =
+            await readBody(req);
+
+        // ----------------------------------------------------
+        // VEHICLE CHANGE VALIDATION
+        // ----------------------------------------------------
+
+        if (
+            body.vehicleId !== undefined
+        ) {
+
+            const vehicle =
+                fleetService.getVehicle(
+                    body.vehicleId
+                );
+
+            if (!vehicle) {
+
+                sendJSON(
+                    res,
+                    404,
+                    {
+                        error:
+                            "Vehicle not found"
+                    }
+                );
+
+                return;
+            }
+
+            if (
+                vehicle.vendorId !==
+                existingShipment.vendorId
+            ) {
+
+                sendJSON(
+                    res,
+                    403,
+                    {
+                        error:
+                            "Vehicle does not belong to this vendor"
+                    }
+                );
+
+                return;
+            }
+
+            if (
+                vehicle.status !==
+                "ACTIVE"
+            ) {
+
+                sendJSON(
+                    res,
+                    400,
+                    {
+                        error:
+                            "Vehicle is not available"
+                    }
+                );
+
+                return;
+            }
+
+            const load =
+                body.load !== undefined
+                    ? Number(body.load)
+                    : Number(existingShipment.load);
+
+            if (
+                load >
+                vehicle.capacity
+            ) {
+
+                sendJSON(
+                    res,
+                    400,
+                    {
+
+                        error:
+                            "Shipment load exceeds vehicle capacity",
+
+                        vehicleCapacity:
+                            vehicle.capacity,
+
+                        shipmentLoad:
+                            load
+                    }
+                );
+
+                return;
+            }
+        }
+
+        // ----------------------------------------------------
+        // LOAD CHANGE VALIDATION
+        // ----------------------------------------------------
+
+        if (
+            body.load !== undefined
+        ) {
+
+            const vehicle =
+                fleetService.getVehicle(
+                    body.vehicleId ||
+                    existingShipment.vehicleId
+                );
+
+            if (!vehicle) {
+
+                sendJSON(
+                    res,
+                    404,
+                    {
+                        error:
+                            "Vehicle not found"
+                    }
+                );
+
+                return;
+            }
+
+            const load =
+                Number(body.load);
+
+            if (
+                load >
+                vehicle.capacity
+            ) {
+
+                sendJSON(
+                    res,
+                    400,
+                    {
+
+                        error:
+                            "Shipment load exceeds vehicle capacity",
+
+                        vehicleCapacity:
+                            vehicle.capacity,
+
+                        shipmentLoad:
+                            load
+                    }
+                );
+
+                return;
+            }
+        }
+
+        // ----------------------------------------------------
+        // UPDATE SHIPMENT
+        // ----------------------------------------------------
+
+        const shipment =
+            shipmentService.updateShipment(
+                shipmentId,
+                body
+            );
+
+        sendJSON(
+            res,
+            200,
+            {
+
+                message:
+                    "Shipment updated successfully",
+
+                shipment
+            }
+        );
+
+    } catch (error) {
+
+        console.error(
+            "UPDATE SHIPMENT ERROR:",
+            error
+        );
+
+        sendJSON(
+            res,
+            400,
+            {
+
+                error:
+                    error.message ||
+                    "Failed to update shipment"
+            }
+        );
+    }
+}
+
+// ============================================================
+// DELETE SHIPMENT
+// ============================================================
+
+function handleDeleteShipment(
+    req,
+    res,
+    shipmentId
+) {
+
+    try {
+
+        const shipment =
+            shipmentService.getShipment(
+                shipmentId
+            );
+
+        if (!shipment) {
+
+            sendJSON(
+                res,
+                404,
+                {
+                    error:
+                        "Shipment not found"
+                }
+            );
+
+            return;
+        }
+
+        const deleted =
+            shipmentService.deleteShipment(
+                shipmentId
+            );
+
+        if (!deleted) {
+
+            sendJSON(
+                res,
+                404,
+                {
+                    error:
+                        "Shipment not found"
+                }
+            );
+
+            return;
+        }
+
+        sendJSON(
+            res,
+            200,
+            {
+
+                message:
+                    "Shipment deleted successfully",
+
+                shipmentId
+            }
+        );
+
+    } catch (error) {
+
+        console.error(
+            "DELETE SHIPMENT ERROR:",
+            error
+        );
+
+        sendJSON(
+            res,
+            500,
+            {
+                error:
+                    "Failed to delete shipment"
+            }
+        );
+    }
+}
+
+// ============================================================
+// TEMPORARY BEST ROUTE SELECTION
+// ============================================================
+
+function selectBestSafetyRoute(
+    routes
+) {
+
+    if (
+        !routes ||
+        routes.length === 0
+    ) {
+        return null;
+    }
+
+    return routes.reduce(
+        (best, current) => {
+
+            if (
+                current.safetyScore >
+                best.safetyScore
+            ) {
+                return current;
+            }
+
+            return best;
+        }
+    );
+}
+
+// ============================================================
+// PRINT ROUTE RESULT
+// ============================================================
+
+function printFinalResult(
+    routes,
+    bestRoute
+) {
+
+    console.log("");
+
+    console.log(
+        "================================================"
+    );
+
+    console.log(
+        "             SILP ROUTING RESULT"
+    );
+
+    console.log(
+        "================================================"
+    );
+
+    console.log("");
+
+    routes.forEach(
+        route => {
+
+            console.log(
+                `Route ${route.routeNumber}`
+            );
+
+            console.log(
+                "Distance       :",
+                `${route.distanceKm} km`
+            );
+
+            console.log(
+                "Estimated Time :",
+                `${route.durationMin} min`
+            );
+
+            console.log(
+                "Safety Score   :",
+                `${route.safetyScore}/100`
+            );
+
+            console.log(
+                "Hazard Risk    :",
+                route.hazardRisk
+            );
+
+            console.log(
+                "Hazards        :",
+                route.hazardDetails
+            );
+
+            console.log("");
+        }
+    );
+
+    if (bestRoute) {
+
+        console.log(
+            "================================================"
+        );
+
+        console.log(
+            "RECOMMENDED ROUTE:",
+            `Route ${bestRoute.routeNumber}`
+        );
+
+        console.log(
+            "SAFETY SCORE:",
+            `${bestRoute.safetyScore}/100`
+        );
+
+        console.log(
+            "================================================"
+        );
+    }
+
+    console.log("");
+}
 
 // ============================================================
 // SERVER
@@ -1492,18 +2059,14 @@ async function handleFindRoute(
 
 const server =
     http.createServer(
-        async (
-            req,
-            res
-        ) => {
+        async (req, res) => {
 
             // ------------------------------------------------
-            // CORS
+            // CORS PREFLIGHT
             // ------------------------------------------------
 
             if (
-                req.method ===
-                "OPTIONS"
+                req.method === "OPTIONS"
             ) {
 
                 res.writeHead(
@@ -1514,17 +2077,22 @@ const server =
                 res.end();
 
                 return;
-
             }
 
+            // ------------------------------------------------
+            // GET PATH WITHOUT QUERY PARAMETERS
+            // ------------------------------------------------
 
-            // ------------------------------------------------
+            const path =
+                getPath(req.url);
+
+            // =================================================
             // ROOT
-            // ------------------------------------------------
+            // =================================================
 
             if (
                 req.method === "GET" &&
-                req.url === "/"
+                path === "/"
             ) {
 
                 sendJSON(
@@ -1536,23 +2104,44 @@ const server =
                             "SILP backend is running",
 
                         status:
-                            "OK"
+                            "OK",
 
+                        version:
+                            "v0.3",
+
+                        modules: {
+
+                            routing:
+                                "ACTIVE",
+
+                            hazardAssessment:
+                                "ACTIVE",
+
+                            safetyScoring:
+                                "ACTIVE",
+
+                            vendorOMS:
+                                "ACTIVE",
+
+                            fleetOMS:
+                                "ACTIVE",
+
+                            shipmentOMS:
+                                "ACTIVE"
+                        }
                     }
                 );
 
                 return;
-
             }
 
-
-            // ------------------------------------------------
-            // GET ROUTES
-            // ------------------------------------------------
+            // =================================================
+            // ROUTES
+            // =================================================
 
             if (
                 req.method === "GET" &&
-                req.url === "/routes"
+                path === "/routes"
             ) {
 
                 sendJSON(
@@ -1561,23 +2150,26 @@ const server =
                     {
 
                         message:
-                            "Route API is working"
+                            "Route API is working",
 
+                        architecture:
+                            "Dynamic hazard-aware routing",
+
+                        optimization:
+                            "Temporary safety-based selection; ACO pending"
                     }
                 );
 
                 return;
-
             }
 
-
-            // ------------------------------------------------
+            // =================================================
             // FIND ROUTE
-            // ------------------------------------------------
+            // =================================================
 
             if (
                 req.method === "POST" &&
-                req.url === "/find-route"
+                path === "/find-route"
             ) {
 
                 await handleFindRoute(
@@ -1586,28 +2178,362 @@ const server =
                 );
 
                 return;
-
             }
 
+            // =================================================
+            // CREATE VENDOR
+            // =================================================
 
-            // ------------------------------------------------
+            if (
+                req.method === "POST" &&
+                path === "/vendors"
+            ) {
+
+                await handleCreateVendor(
+                    req,
+                    res
+                );
+
+                return;
+            }
+
+            // =================================================
+            // GET ALL VENDORS
+            // =================================================
+
+            if (
+                req.method === "GET" &&
+                path === "/vendors"
+            ) {
+
+                handleGetAllVendors(
+                    req,
+                    res
+                );
+
+                return;
+            }
+
+            // =================================================
+            // VENDOR VEHICLE COLLECTION
+            //
+            // /vendors/:vendorId/vehicles
+            // =================================================
+
+            const vendorVehiclesMatch =
+                path.match(
+                    /^\/vendors\/([^/]+)\/vehicles$/
+                );
+
+            if (vendorVehiclesMatch) {
+
+                const vendorId =
+                    vendorVehiclesMatch[1];
+
+                // ---------------------------------------------
+                // CREATE VEHICLE
+                // ---------------------------------------------
+
+                if (
+                    req.method === "POST"
+                ) {
+
+                    await handleCreateVehicle(
+                        req,
+                        res,
+                        vendorId
+                    );
+
+                    return;
+                }
+
+                // ---------------------------------------------
+                // GET VENDOR VEHICLES
+                // ---------------------------------------------
+
+                if (
+                    req.method === "GET"
+                ) {
+
+                    handleGetVendorVehicles(
+                        req,
+                        res,
+                        vendorId
+                    );
+
+                    return;
+                }
+            }
+
+            // =================================================
+            // VENDOR SHIPMENT COLLECTION
+            //
+            // /vendors/:vendorId/shipments
+            // =================================================
+
+            const vendorShipmentsMatch =
+                path.match(
+                    /^\/vendors\/([^/]+)\/shipments$/
+                );
+
+            if (vendorShipmentsMatch) {
+
+                const vendorId =
+                    vendorShipmentsMatch[1];
+
+                // ---------------------------------------------
+                // CREATE SHIPMENT
+                // ---------------------------------------------
+
+                if (
+                    req.method === "POST"
+                ) {
+
+                    await handleCreateShipment(
+                        req,
+                        res,
+                        vendorId
+                    );
+
+                    return;
+                }
+
+                // ---------------------------------------------
+                // GET VENDOR SHIPMENTS
+                // ---------------------------------------------
+
+                if (
+                    req.method === "GET"
+                ) {
+
+                    handleGetVendorShipments(
+                        req,
+                        res,
+                        vendorId
+                    );
+
+                    return;
+                }
+            }
+
+            // =================================================
+            // VENDOR ID ROUTES
+            //
+            // /vendors/:vendorId
+            // =================================================
+
+            const vendorMatch =
+                path.match(
+                    /^\/vendors\/([^/]+)$/
+                );
+
+            if (vendorMatch) {
+
+                const vendorId =
+                    vendorMatch[1];
+
+                // ---------------------------------------------
+                // GET VENDOR
+                // ---------------------------------------------
+
+                if (
+                    req.method === "GET"
+                ) {
+
+                    handleGetVendor(
+                        req,
+                        res,
+                        vendorId
+                    );
+
+                    return;
+                }
+
+                // ---------------------------------------------
+                // UPDATE VENDOR
+                // ---------------------------------------------
+
+                if (
+                    req.method === "PUT"
+                ) {
+
+                    await handleUpdateVendor(
+                        req,
+                        res,
+                        vendorId
+                    );
+
+                    return;
+                }
+
+                // ---------------------------------------------
+                // DELETE VENDOR
+                // ---------------------------------------------
+
+                if (
+                    req.method === "DELETE"
+                ) {
+
+                    handleDeleteVendor(
+                        req,
+                        res,
+                        vendorId
+                    );
+
+                    return;
+                }
+            }
+
+            // =================================================
+            // VEHICLE ID ROUTES
+            //
+            // /vehicles/:vehicleId
+            // =================================================
+
+            const vehicleMatch =
+                path.match(
+                    /^\/vehicles\/([^/]+)$/
+                );
+
+            if (vehicleMatch) {
+
+                const vehicleId =
+                    vehicleMatch[1];
+
+                // ---------------------------------------------
+                // GET VEHICLE
+                // ---------------------------------------------
+
+                if (
+                    req.method === "GET"
+                ) {
+
+                    handleGetVehicle(
+                        req,
+                        res,
+                        vehicleId
+                    );
+
+                    return;
+                }
+
+                // ---------------------------------------------
+                // UPDATE VEHICLE
+                // ---------------------------------------------
+
+                if (
+                    req.method === "PUT"
+                ) {
+
+                    await handleUpdateVehicle(
+                        req,
+                        res,
+                        vehicleId
+                    );
+
+                    return;
+                }
+
+                // ---------------------------------------------
+                // DELETE VEHICLE
+                // ---------------------------------------------
+
+                if (
+                    req.method === "DELETE"
+                ) {
+
+                    handleDeleteVehicle(
+                        req,
+                        res,
+                        vehicleId
+                    );
+
+                    return;
+                }
+            }
+
+            // =================================================
+            // SHIPMENT ID ROUTES
+            //
+            // /shipments/:shipmentId
+            // =================================================
+
+            const shipmentMatch =
+                path.match(
+                    /^\/shipments\/([^/]+)$/
+                );
+
+            if (shipmentMatch) {
+
+                const shipmentId =
+                    shipmentMatch[1];
+
+                // ---------------------------------------------
+                // GET SHIPMENT
+                // ---------------------------------------------
+
+                if (
+                    req.method === "GET"
+                ) {
+
+                    handleGetShipment(
+                        req,
+                        res,
+                        shipmentId
+                    );
+
+                    return;
+                }
+
+                // ---------------------------------------------
+                // UPDATE SHIPMENT
+                // ---------------------------------------------
+
+                if (
+                    req.method === "PUT"
+                ) {
+
+                    await handleUpdateShipment(
+                        req,
+                        res,
+                        shipmentId
+                    );
+
+                    return;
+                }
+
+                // ---------------------------------------------
+                // DELETE SHIPMENT
+                // ---------------------------------------------
+
+                if (
+                    req.method === "DELETE"
+                ) {
+
+                    handleDeleteShipment(
+                        req,
+                        res,
+                        shipmentId
+                    );
+
+                    return;
+                }
+            }
+
+            // =================================================
             // 404
-            // ------------------------------------------------
+            // =================================================
 
             sendJSON(
                 res,
                 404,
                 {
-
                     error:
                         "Endpoint not found"
-
                 }
             );
-
         }
     );
-
 
 // ============================================================
 // START SERVER
@@ -1618,12 +2544,13 @@ server.listen(
     () => {
 
         console.log("");
+
         console.log(
             "======================================"
         );
 
         console.log(
-            "       SILP BACKEND SERVER"
+            "       SILP BACKEND SERVER v0.3"
         );
 
         console.log(
@@ -1634,6 +2561,12 @@ server.listen(
             `Server running on http://localhost:${PORT}`
         );
 
+        console.log("");
+
+        console.log(
+            "ROUTING:"
+        );
+
         console.log(
             "POST /find-route"
         );
@@ -1642,11 +2575,88 @@ server.listen(
             "GET  /routes"
         );
 
+        console.log("");
+
+        console.log(
+            "OMS - VENDORS:"
+        );
+
+        console.log(
+            "POST   /vendors"
+        );
+
+        console.log(
+            "GET    /vendors"
+        );
+
+        console.log(
+            "GET    /vendors/:id"
+        );
+
+        console.log(
+            "PUT    /vendors/:id"
+        );
+
+        console.log(
+            "DELETE /vendors/:id"
+        );
+
+        console.log("");
+
+        console.log(
+            "OMS - FLEET / VEHICLES:"
+        );
+
+        console.log(
+            "POST   /vendors/:vendorId/vehicles"
+        );
+
+        console.log(
+            "GET    /vendors/:vendorId/vehicles"
+        );
+
+        console.log(
+            "GET    /vehicles/:vehicleId"
+        );
+
+        console.log(
+            "PUT    /vehicles/:vehicleId"
+        );
+
+        console.log(
+            "DELETE /vehicles/:vehicleId"
+        );
+
+        console.log("");
+
+        console.log(
+            "OMS - SHIPMENTS:"
+        );
+
+        console.log(
+            "POST   /vendors/:vendorId/shipments"
+        );
+
+        console.log(
+            "GET    /vendors/:vendorId/shipments"
+        );
+
+        console.log(
+            "GET    /shipments/:shipmentId"
+        );
+
+        console.log(
+            "PUT    /shipments/:shipmentId"
+        );
+
+        console.log(
+            "DELETE /shipments/:shipmentId"
+        );
+
         console.log(
             "======================================"
         );
 
         console.log("");
-
     }
 );
