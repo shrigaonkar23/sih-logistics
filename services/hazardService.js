@@ -5,59 +5,88 @@ const https = require("https");
 // ============================================================
 
 function getJSON(url) {
-
-    return new Promise(
-        (resolve, reject) => {
-
-            https.get(
-                url,
-                {
-                    headers: {
-                        "User-Agent":
-                            "SIH-Logistics/1.0",
-
-                        "Accept":
-                            "application/json"
-                    }
+    return new Promise((resolve, reject) => {
+        const request = https.get(
+            url,
+            {
+                headers: {
+                    "User-Agent": "SILP-Logistics/1.0",
+                    "Accept": "application/json"
                 },
-                response => {
+                timeout: 10000
+            },
+            response => {
+                let data = "";
 
-                    let data = "";
+                // ------------------------------------------------
+                // HTTP STATUS CHECK
+                // ------------------------------------------------
 
-                    response.on(
-                        "data",
-                        chunk => {
-                            data += chunk;
-                        }
+                if (
+                    response.statusCode < 200 ||
+                    response.statusCode >= 300
+                ) {
+                    response.resume();
+
+                    reject(
+                        new Error(
+                            `Weather API returned HTTP ${response.statusCode}`
+                        )
                     );
 
-                    response.on(
-                        "end",
-                        () => {
-
-                            try {
-
-                                resolve(
-                                    JSON.parse(data)
-                                );
-
-                            } catch (error) {
-
-                                reject(
-                                    new Error(
-                                        "Invalid weather API response"
-                                    )
-                                );
-                            }
-                        }
-                    );
+                    return;
                 }
-            ).on(
-                "error",
-                reject
+
+                // ------------------------------------------------
+                // RECEIVE DATA
+                // ------------------------------------------------
+
+                response.on("data", chunk => {
+                    data += chunk;
+                });
+
+                // ------------------------------------------------
+                // PARSE JSON
+                // ------------------------------------------------
+
+                response.on("end", () => {
+                    try {
+                        resolve(JSON.parse(data));
+                    } catch (error) {
+                        reject(
+                            new Error(
+                                "Invalid weather API response"
+                            )
+                        );
+                    }
+                });
+
+                response.on("error", error => {
+                    reject(error);
+                });
+            }
+        );
+
+        // --------------------------------------------------------
+        // REQUEST TIMEOUT
+        // --------------------------------------------------------
+
+        request.on("timeout", () => {
+            request.destroy(
+                new Error(
+                    "Weather API request timed out after 10 seconds"
+                )
             );
-        }
-    );
+        });
+
+        // --------------------------------------------------------
+        // CONNECTION ERROR
+        // --------------------------------------------------------
+
+        request.on("error", error => {
+            reject(error);
+        });
+    });
 }
 
 // ============================================================
@@ -69,7 +98,6 @@ function clamp(
     minimum = 0,
     maximum = 1
 ) {
-
     return Math.max(
         minimum,
         Math.min(
@@ -87,11 +115,8 @@ function calculateRainRisk(
     precipitation,
     precipitationProbability
 ) {
-
     const rainAmount =
-        Number(
-            precipitation || 0
-        );
+        Number(precipitation || 0);
 
     const probability =
         Number(
@@ -125,11 +150,8 @@ function calculateRainRisk(
 function calculateWeatherCodeRisk(
     weatherCode
 ) {
-
     const code =
-        Number(
-            weatherCode
-        );
+        Number(weatherCode);
 
     // Clear
     if (code === 0) {
@@ -186,9 +208,7 @@ function calculateWeatherCodeRisk(
     }
 
     // Thunderstorm
-    if (
-        code >= 95
-    ) {
+    if (code >= 95) {
         return 0.90;
     }
 
@@ -203,7 +223,6 @@ async function getWeather(
     latitude,
     longitude
 ) {
-
     const url =
         "https://api.open-meteo.com/v1/forecast" +
         "?latitude=" +
@@ -221,16 +240,19 @@ async function getWeather(
 // ROUTE HAZARD ASSESSMENT
 // ============================================================
 //
-// For the first implementation we assess several points along
-// the route instead of assigning one weather value to the
-// entire route.
+// Assess several points along the route rather than assigning
+// one weather value to the entire route.
 //
-// This architecture can later consume:
-// - flood prediction
-// - landslide prediction
-// - disaster alerts
-// - rainfall forecasts
-// - government hazard APIs
+// Current implementation:
+// - Start
+// - Middle
+// - End
+//
+// Future additions:
+// - Flood prediction
+// - Landslide prediction
+// - Disaster alerts
+// - Government hazard APIs
 // - ML predictions
 //
 // ============================================================
@@ -240,16 +262,18 @@ async function assessRouteHazards(
     source,
     destination
 ) {
-
     const coordinates =
         route.coordinates || [];
 
     let samplePoints = [];
 
+    // ----------------------------------------------------------
+    // SELECT SAMPLE POINTS
+    // ----------------------------------------------------------
+
     if (
         coordinates.length >= 3
     ) {
-
         const firstIndex = 0;
 
         const middleIndex =
@@ -265,9 +289,7 @@ async function assessRouteHazards(
             coordinates[middleIndex],
             coordinates[lastIndex]
         ];
-
     } else {
-
         samplePoints = [
             [
                 source.longitude,
@@ -280,20 +302,50 @@ async function assessRouteHazards(
         ];
     }
 
+    // ----------------------------------------------------------
+    // REMOVE DUPLICATE POINTS
+    // ----------------------------------------------------------
+
+    samplePoints =
+        samplePoints.filter(
+            (point, index, array) => {
+                if (!point) {
+                    return false;
+                }
+
+                const key =
+                    `${point[0]},${point[1]}`;
+
+                return (
+                    array.findIndex(
+                        other =>
+                            other &&
+                            `${other[0]},${other[1]}` === key
+                    ) === index
+                );
+            }
+        );
+
     const pointRisks = [];
+
+    // ==========================================================
+    // WEATHER REQUESTS
+    // ==========================================================
 
     for (
         const point
         of samplePoints
     ) {
-
         const longitude =
-            point[0];
+            Number(point[0]);
 
         const latitude =
-            point[1];
+            Number(point[1]);
 
         try {
+            console.log(
+                `Weather assessment: ${latitude}, ${longitude}`
+            );
 
             const weather =
                 await getWeather(
@@ -308,7 +360,7 @@ async function assessRouteHazards(
                 current.precipitation || 0;
 
             const weatherCode =
-                current.weather_code || 0;
+                current.weather_code ?? 0;
 
             const hourly =
                 weather.hourly || {};
@@ -322,23 +374,32 @@ async function assessRouteHazards(
                     ? probabilityArray[0]
                     : 0;
 
+            // --------------------------------------------------
+            // RAINFALL RISK
+            // --------------------------------------------------
+
             const rainfallRisk =
                 calculateRainRisk(
                     precipitation,
                     precipitationProbability
                 );
 
+            // --------------------------------------------------
+            // WEATHER CONDITION RISK
+            // --------------------------------------------------
+
             const weatherRisk =
                 calculateWeatherCodeRisk(
                     weatherCode
                 );
 
-            // ------------------------------------------------
-            // Temporary placeholders
+            // --------------------------------------------------
+            // TEMPORARY DISASTER VALUES
+            // --------------------------------------------------
             //
-            // These will later come from the disaster/
-            // prediction component.
-            // ------------------------------------------------
+            // These will later be replaced by actual:
+            // flood / landslide / disaster prediction.
+            //
 
             const floodRisk = 0;
 
@@ -350,6 +411,10 @@ async function assessRouteHazards(
                     : 0;
 
             const disasterRisk = 0;
+
+            // --------------------------------------------------
+            // OVERALL POINT RISK
+            // --------------------------------------------------
 
             const overallRisk =
                 clamp(
@@ -374,9 +439,7 @@ async function assessRouteHazards(
                 );
 
             pointRisks.push({
-
                 latitude,
-
                 longitude,
 
                 rainfall:
@@ -402,11 +465,16 @@ async function assessRouteHazards(
                 error.message
             );
 
-            // Conservative fallback
+            // --------------------------------------------------
+            // CONSERVATIVE FALLBACK
+            // --------------------------------------------------
+            //
+            // Do NOT mark the route as completely safe when
+            // live weather data cannot be obtained.
+            //
+
             pointRisks.push({
-
                 latitude,
-
                 longitude,
 
                 rainfall: 0.50,
@@ -421,18 +489,22 @@ async function assessRouteHazards(
 
                 weatherRisk: 0.50,
 
-                overallRisk: 0.50
+                overallRisk: 0.50,
+
+                dataUnavailable: true,
+
+                dataUnavailableReason:
+                    error.message
             });
         }
     }
 
-    // ========================================================
+    // ==========================================================
     // AGGREGATE ROUTE RISK
-    // ========================================================
+    // ==========================================================
 
     const averageRisk =
         pointRisks.length > 0
-
             ? pointRisks.reduce(
                 (
                     total,
@@ -443,22 +515,22 @@ async function assessRouteHazards(
                 0
             ) /
             pointRisks.length
-
             : 0;
 
     const maximumRisk =
         pointRisks.length > 0
-
             ? Math.max(
                 ...pointRisks.map(
                     point =>
                         point.overallRisk
                 )
             )
-
             : 0;
 
-    // Give some importance to the worst section.
+    // ----------------------------------------------------------
+    // WORST SECTION HAS EXTRA IMPORTANCE
+    // ----------------------------------------------------------
+
     const overallRisk =
         clamp(
             (
@@ -468,6 +540,10 @@ async function assessRouteHazards(
                 maximumRisk * 0.40
             )
         );
+
+    // ==========================================================
+    // AGGREGATED HAZARD VALUES
+    // ==========================================================
 
     const rainfall =
         average(
@@ -509,8 +585,35 @@ async function assessRouteHazards(
             )
         );
 
-    return {
+    // ==========================================================
+    // CHECK DATA AVAILABILITY
+    // ==========================================================
 
+    const unavailablePoints =
+        pointRisks.filter(
+            point =>
+                point.dataUnavailable
+        );
+
+    const dataUnavailable =
+        unavailablePoints.length > 0;
+
+    const dataUnavailableReason =
+        dataUnavailable
+            ? unavailablePoints
+                .map(
+                    point =>
+                        point.dataUnavailableReason
+                )
+                .filter(Boolean)
+                .join("; ")
+            : null;
+
+    // ==========================================================
+    // RETURN
+    // ==========================================================
+
+    return {
         rainfall,
 
         floodRisk,
@@ -523,7 +626,11 @@ async function assessRouteHazards(
 
         overallRisk,
 
-        pointRisks
+        pointRisks,
+
+        dataUnavailable,
+
+        dataUnavailableReason
     };
 }
 
@@ -532,7 +639,6 @@ async function assessRouteHazards(
 // ============================================================
 
 function average(values) {
-
     if (
         !values ||
         values.length === 0
@@ -555,6 +661,5 @@ function average(values) {
 // ============================================================
 
 module.exports = {
-
     assessRouteHazards
 };

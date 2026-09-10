@@ -18,5 +18,13 @@
   "bugs": {
     "url": "https://github.com/shrigaonkar23/sih-logistics/issues"
   },
-  "homepage": "https://github.com/shrigaonkar23/sih-logistics#readme"
+  "homepage": "https://github.com/shrigaonkar23/sih-logistics#readme",
+  "dependencies": {
+    "@geo-maps/countries-land-10m": "^0.6.0",
+    "oracledb": "^7.0.1",
+    "which-polygon": "^2.2.1"
+  },
+  "allowScripts": {
+    "oracledb@7.0.1": true
+  }
 }
