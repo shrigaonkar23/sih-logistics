@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-
 import {
   MapContainer,
   TileLayer,
@@ -8,7 +7,6 @@ import {
   Popup,
   useMap,
 } from "react-leaflet";
-
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "./App.css";
@@ -34,24 +32,36 @@ const markerIcon = new L.Icon({
   iconSize: [25, 41],
   iconAnchor: [12, 41],
   popupAnchor: [1, -34],
-  shadowSize: [41, 41],
 });
+
+/* ============================================================
+   MAP HELPERS
+   ============================================================ */
 
 function FitRoutes({ routes }) {
   const map = useMap();
 
   useEffect(() => {
-    const allPoints = routes.flatMap((route) =>
-      Array.isArray(route.coordinates)
-        ? route.coordinates.map(([lng, lat]) => [lat, lng])
-        : []
+    if (!routes?.length) return;
+
+    const points = routes.flatMap((route) =>
+      (route.coordinates || [])
+        .filter(
+          (point) =>
+            Array.isArray(point) &&
+            point.length >= 2 &&
+            Number.isFinite(Number(point[0])) &&
+            Number.isFinite(Number(point[1]))
+        )
+        .map(([lng, lat]) => [
+          Number(lat),
+          Number(lng),
+        ])
     );
 
-    if (allPoints.length > 1) {
-      const bounds = L.latLngBounds(allPoints);
-
-      map.fitBounds(bounds, {
-        padding: [40, 40],
+    if (points.length > 1) {
+      map.fitBounds(points, {
+        padding: [45, 45],
         maxZoom: 12,
       });
     }
@@ -60,27 +70,53 @@ function FitRoutes({ routes }) {
   return null;
 }
 
+/* ============================================================
+   GENERAL HELPERS
+   ============================================================ */
+
 function formatDuration(minutes) {
-  if (minutes === null || minutes === undefined) {
+  if (
+    minutes === undefined ||
+    minutes === null ||
+    Number.isNaN(Number(minutes))
+  ) {
     return "--";
   }
 
-  const mins = Math.round(Number(minutes));
+  const total = Math.max(
+    0,
+    Math.round(Number(minutes))
+  );
 
-  if (mins < 60) {
+  const hours = Math.floor(total / 60);
+  const mins = total % 60;
+
+  if (hours === 0) {
     return `${mins} min`;
   }
 
-  const hours = Math.floor(mins / 60);
-  const remaining = mins % 60;
+  if (mins === 0) {
+    return `${hours} hr`;
+  }
 
-  return remaining === 0
-    ? `${hours} hr`
-    : `${hours} hr ${remaining} min`;
+  return `${hours} hr ${mins} min`;
+}
+
+function getSafetyScore(route) {
+  const value = Number(route?.safetyScore);
+
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.max(
+    0,
+    Math.min(100, value)
+  );
 }
 
 function getSafetyClass(score) {
-  const value = Number(score);
+  const value = Number(score ?? 0);
 
   if (value >= 80) return "safe";
   if (value >= 60) return "moderate";
@@ -89,318 +125,257 @@ function getSafetyClass(score) {
 }
 
 function getRiskLabel(risk) {
-  if (!risk) return "UNKNOWN";
+  if (!risk) {
+    return "Low risk";
+  }
 
-  return String(risk)
-    .replaceAll("_", " ")
-    .replaceAll("-", " ")
-    .toUpperCase();
+  const value = String(risk).toLowerCase();
+
+  if (
+    value.includes("critical") ||
+    value.includes("severe")
+  ) {
+    return "Critical";
+  }
+
+  if (value.includes("high")) {
+    return "High risk";
+  }
+
+  if (
+    value.includes("moderate") ||
+    value.includes("medium")
+  ) {
+    return "Moderate";
+  }
+
+  if (
+    value.includes("low") ||
+    value.includes("minimal")
+  ) {
+    return "Low risk";
+  }
+
+  return String(risk);
 }
 
 function getHazardMessage(route) {
-  const hazards = route?.hazardDetails;
+  const hazards =
+    route?.hazardDetails || {};
 
-  if (!hazards) {
-    return "Hazard assessment unavailable.";
+  if (hazards.rainfall) {
+    return String(hazards.rainfall);
   }
 
-  const messages = [];
-
-  if (Number(hazards.rainfall) > 0) {
-    messages.push("Rainfall detected");
+  if (hazards.floodRisk) {
+    return `Flood risk: ${hazards.floodRisk}`;
   }
 
-  if (Number(hazards.floodRisk) > 0) {
-    messages.push("Flood risk detected");
+  if (hazards.landslideRisk) {
+    return `Landslide risk: ${hazards.landslideRisk}`;
   }
 
-  if (Number(hazards.landslideRisk) > 0) {
-    messages.push("Landslide risk detected");
+  if (hazards.stormRisk) {
+    return `Storm risk: ${hazards.stormRisk}`;
   }
 
-  if (Number(hazards.stormRisk) > 0) {
-    messages.push("Storm risk detected");
+  if (hazards.disasterRisk) {
+    return `Disaster risk: ${hazards.disasterRisk}`;
   }
 
-  if (Number(hazards.disasterRisk) > 0) {
-    messages.push("Disaster risk detected");
-  }
-
-  return messages.length
-    ? messages.join(" • ")
-    : "No significant environmental hazard detected.";
+  return "No major weather or disaster hazard detected.";
 }
 
 function getEntityId(entity) {
-  if (!entity) return "";
-
   return (
-    entity.id ??
-    entity.vendorId ??
-    entity.vehicleId ??
-    entity._id ??
-    ""
+    entity?.id ||
+    entity?.vendorId ||
+    entity?.vehicleId ||
+    entity?._id
   );
 }
 
-function App() {
-  const [activeSection, setActiveSection] = useState("routing");
+function getRouteKey(route, index) {
+  return (
+    route?.routeNumber ??
+    route?.routeId ??
+    route?.id ??
+    index
+  );
+}
 
-  // ============================================================
-  // ROUTING STATE
-  // ============================================================
+function isSameRoute(routeA, routeB) {
+  if (!routeA || !routeB) {
+    return false;
+  }
+
+  if (
+    routeA.routeNumber != null &&
+    routeB.routeNumber != null
+  ) {
+    return (
+      String(routeA.routeNumber) ===
+      String(routeB.routeNumber)
+    );
+  }
+
+  if (routeA.id && routeB.id) {
+    return routeA.id === routeB.id;
+  }
+
+  if (routeA.routeId && routeB.routeId) {
+    return (
+      routeA.routeId === routeB.routeId
+    );
+  }
+
+  return routeA === routeB;
+}
+
+function getValidCoordinates(route) {
+  return (route?.coordinates || []).filter(
+    (point) =>
+      Array.isArray(point) &&
+      point.length >= 2 &&
+      Number.isFinite(Number(point[0])) &&
+      Number.isFinite(Number(point[1]))
+  );
+}
+
+/* ============================================================
+   APP
+   ============================================================ */
+
+function App() {
+  const [activeSection, setActiveSection] =
+    useState("routing");
+
+  /* ==========================================================
+     ROUTING STATE
+     ========================================================== */
 
   const [source, setSource] = useState("");
-  const [destination, setDestination] = useState("");
-  const [urgency, setUrgency] = useState("MEDIUM");
+  const [destination, setDestination] =
+    useState("");
+
+  const [urgency, setUrgency] =
+    useState("MEDIUM");
 
   const [routes, setRoutes] = useState([]);
-  const [bestRoute, setBestRoute] = useState(null);
-  const [routeRequest, setRouteRequest] = useState(null);
+  const [bestRoute, setBestRoute] =
+    useState(null);
+  const [selectedRoute, setSelectedRoute] =
+    useState(null);
 
-  const [loadingRoutes, setLoadingRoutes] = useState(false);
-  const [routeError, setRouteError] = useState("");
-  const [selectedRoute, setSelectedRoute] = useState(null);
+  const [routeRequest, setRouteRequest] =
+    useState(null);
 
-  // ============================================================
-  // ROUTE VENDOR / VEHICLE
-  // These are independent from the OMS active vendor.
-  // ============================================================
+  const [loadingRoutes, setLoadingRoutes] =
+    useState(false);
 
-  const [routeVendorId, setRouteVendorId] = useState("");
-  const [routeVehicles, setRouteVehicles] = useState([]);
-  const [routeVehicleId, setRouteVehicleId] = useState("");
+  const [routeError, setRouteError] =
+    useState("");
+
+  /* ==========================================================
+     ROUTE VENDOR / VEHICLE
+     ========================================================== */
+
+  const [routeVendorId, setRouteVendorId] =
+    useState("");
+
+  const [routeVehicles, setRouteVehicles] =
+    useState([]);
+
+  const [routeVehicleId, setRouteVehicleId] =
+    useState("");
+
   const [routeVehicleLoading, setRouteVehicleLoading] =
     useState(false);
 
-  // ============================================================
-  // VENDOR STATE
-  // ============================================================
+  /* ==========================================================
+     VENDOR OMS
+     ========================================================== */
 
   const [vendors, setVendors] = useState([]);
-  const [selectedVendorId, setSelectedVendorId] = useState("");
 
-  const [vendorLoading, setVendorLoading] = useState(false);
-  const [vendorError, setVendorError] = useState("");
+  const [selectedVendorId, setSelectedVendorId] =
+    useState("");
 
-  const [showVendorForm, setShowVendorForm] = useState(false);
+  const [vendorLoading, setVendorLoading] =
+    useState(false);
 
-  const [vendorForm, setVendorForm] = useState({
-    name: "",
-    email: "",
-    phone: "",
-    address: "",
-  });
+  const [vendorError, setVendorError] =
+    useState("");
 
-  // ============================================================
-  // VEHICLE STATE
-  // ============================================================
+  const [showVendorForm, setShowVendorForm] =
+    useState(false);
+
+  const [vendorForm, setVendorForm] =
+    useState({
+      name: "",
+      email: "",
+    });
+
+  /* ==========================================================
+     FLEET
+     ========================================================== */
 
   const [vehicles, setVehicles] = useState([]);
-  const [vehicleLoading, setVehicleLoading] = useState(false);
 
-  const [showVehicleForm, setShowVehicleForm] = useState(false);
+  const [vehicleLoading, setVehicleLoading] =
+    useState(false);
 
-  const [vehicleForm, setVehicleForm] = useState({
-    registrationNumber: "",
-    vehicleType: "TRUCK",
-    capacity: "",
-    fuelType: "DIESEL",
-  });
+  const [showVehicleForm, setShowVehicleForm] =
+    useState(false);
 
-  // ============================================================
-  // SHIPMENT STATE
-  // ============================================================
+  const [vehicleForm, setVehicleForm] =
+    useState({
+      registrationNumber: "",
+      vehicleType: "Truck",
+      capacity: "",
+      fuelType: "Diesel",
+    });
 
-  const [shipments, setShipments] = useState([]);
-  const [shipmentLoading, setShipmentLoading] = useState(false);
+  /* ==========================================================
+     SHIPMENTS
+     ========================================================== */
 
-  const [showShipmentForm, setShowShipmentForm] = useState(false);
+  const [shipments, setShipments] =
+    useState([]);
 
-  const [shipmentForm, setShipmentForm] = useState({
-    vehicleId: "",
-    origin: "",
-    destination: "",
-    shipmentType: "GENERAL",
-    load: "",
-  });
+  const [shipmentLoading, setShipmentLoading] =
+    useState(false);
 
-  // ============================================================
-  // LOAD VENDORS
-  // ============================================================
+  const [showShipmentForm, setShowShipmentForm] =
+    useState(false);
+
+  const [shipmentForm, setShipmentForm] =
+    useState({
+      vehicleId: "",
+      origin: "",
+      destination: "",
+      shipmentType: "General",
+      load: "",
+    });
+
+  /* ==========================================================
+     INITIAL DATA
+     ========================================================== */
 
   useEffect(() => {
     loadVendors();
   }, []);
 
-  async function loadVendors(preferredVendorId = "") {
-    try {
-      setVendorLoading(true);
-      setVendorError("");
-
-      const response = await fetch(`${API_BASE}/vendors`);
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error || "Failed to load vendors"
-        );
-      }
-
-      const vendorList = Array.isArray(data.vendors)
-        ? data.vendors
-        : [];
-
-      setVendors(vendorList);
-
-      const currentStillExists = vendorList.some(
-        (vendor) =>
-          String(getEntityId(vendor)) ===
-          String(selectedVendorId)
-      );
-
-      if (preferredVendorId) {
-        const preferredExists = vendorList.some(
-          (vendor) =>
-            String(getEntityId(vendor)) ===
-            String(preferredVendorId)
-        );
-
-        if (preferredExists) {
-          setSelectedVendorId(
-            String(preferredVendorId)
-          );
-        }
-      } else if (
-        !currentStillExists &&
-        vendorList.length > 0
-      ) {
-        setSelectedVendorId(
-          String(getEntityId(vendorList[0]))
-        );
-      }
-
-      if (vendorList.length === 0) {
-        setSelectedVendorId("");
-      }
-    } catch (error) {
-      console.error(error);
-
-      setVendorError(
-        error.message || "Failed to load vendors"
-      );
-    } finally {
-      setVendorLoading(false);
-    }
-  }
-
-  // ============================================================
-  // LOAD OMS VEHICLES + SHIPMENTS WHEN OMS VENDOR CHANGES
-  // ============================================================
-
   useEffect(() => {
     if (!selectedVendorId) {
       setVehicles([]);
       setShipments([]);
-
-      setShipmentForm((previous) => ({
-        ...previous,
-        vehicleId: "",
-      }));
-
       return;
     }
 
     loadVendorVehicles(selectedVendorId);
     loadVendorShipments(selectedVendorId);
-
-    setShipmentForm((previous) => ({
-      ...previous,
-      vehicleId: "",
-    }));
   }, [selectedVendorId]);
-
-  async function loadVendorVehicles(vendorId) {
-    if (!vendorId) {
-      setVehicles([]);
-      return;
-    }
-
-    try {
-      setVehicleLoading(true);
-
-      const response = await fetch(
-        `${API_BASE}/vendors/${vendorId}/vehicles`
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error || "Failed to load vehicles"
-        );
-      }
-
-      setVehicles(
-        Array.isArray(data.vehicles)
-          ? data.vehicles
-          : []
-      );
-    } catch (error) {
-      console.error(error);
-
-      setVendorError(
-        error.message || "Failed to load vehicles"
-      );
-
-      setVehicles([]);
-    } finally {
-      setVehicleLoading(false);
-    }
-  }
-
-  async function loadVendorShipments(vendorId) {
-    if (!vendorId) {
-      setShipments([]);
-      return;
-    }
-
-    try {
-      setShipmentLoading(true);
-
-      const response = await fetch(
-        `${API_BASE}/vendors/${vendorId}/shipments`
-      );
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(
-          data.error || "Failed to load shipments"
-        );
-      }
-
-      setShipments(
-        Array.isArray(data.shipments)
-          ? data.shipments
-          : []
-      );
-    } catch (error) {
-      console.error(error);
-
-      setVendorError(
-        error.message || "Failed to load shipments"
-      );
-
-      setShipments([]);
-    } finally {
-      setShipmentLoading(false);
-    }
-  }
-
-  // ============================================================
-  // LOAD VEHICLES FOR ROUTE VENDOR
-  // ============================================================
 
   useEffect(() => {
     if (!routeVendorId) {
@@ -412,139 +387,219 @@ function App() {
     loadRouteVehicles(routeVendorId);
   }, [routeVendorId]);
 
-  async function loadRouteVehicles(vendorId) {
-    try {
-      setRouteVehicleLoading(true);
+  /* ==========================================================
+     VENDOR API
+     ========================================================== */
 
+  async function loadVendors() {
+    setVendorLoading(true);
+    setVendorError("");
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/vendors`
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          "Unable to load vendors."
+        );
+      }
+
+      const data = await response.json();
+
+      const list = Array.isArray(data)
+        ? data
+        : data.vendors || [];
+
+      setVendors(list);
+
+      if (
+        list.length &&
+        !selectedVendorId
+      ) {
+        setSelectedVendorId(
+          String(getEntityId(list[0]))
+        );
+      }
+    } catch (error) {
+      setVendorError(error.message);
+    } finally {
+      setVendorLoading(false);
+    }
+  }
+
+  async function loadVendorVehicles(vendorId) {
+    setVehicleLoading(true);
+
+    try {
       const response = await fetch(
         `${API_BASE}/vendors/${vendorId}/vehicles`
       );
 
-      const data = await response.json();
-
       if (!response.ok) {
         throw new Error(
-          data.error || "Failed to load route vehicles"
+          "Unable to load vehicles."
         );
       }
 
-      const vehicleList = Array.isArray(data.vehicles)
-        ? data.vehicles
-        : [];
+      const data = await response.json();
 
-      const activeVehicles = vehicleList.filter(
-        (vehicle) =>
-          vehicle.status === "ACTIVE" ||
-          !vehicle.status
+      setVehicles(
+        Array.isArray(data)
+          ? data
+          : data.vehicles || []
+      );
+    } catch {
+      setVehicles([]);
+    } finally {
+      setVehicleLoading(false);
+    }
+  }
+
+  async function loadVendorShipments(
+    vendorId
+  ) {
+    setShipmentLoading(true);
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/vendors/${vendorId}/shipments`
       );
 
-      setRouteVehicles(activeVehicles);
+      if (!response.ok) {
+        throw new Error(
+          "Unable to load shipments."
+        );
+      }
 
-      // If the previously selected vehicle does not
-      // belong to the newly selected vendor, clear it.
-      const currentStillExists = activeVehicles.some(
-        (vehicle) =>
-          String(getEntityId(vehicle)) ===
-          String(routeVehicleId)
+      const data = await response.json();
+
+      setShipments(
+        Array.isArray(data)
+          ? data
+          : data.shipments || []
+      );
+    } catch {
+      setShipments([]);
+    } finally {
+      setShipmentLoading(false);
+    }
+  }
+
+  async function loadRouteVehicles(
+    vendorId
+  ) {
+    setRouteVehicleLoading(true);
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/vendors/${vendorId}/vehicles`
       );
 
-      if (!currentStillExists) {
+      if (!response.ok) {
+        throw new Error(
+          "Unable to load vehicles."
+        );
+      }
+
+      const data = await response.json();
+
+      const list = Array.isArray(data)
+        ? data
+        : data.vehicles || [];
+
+      setRouteVehicles(list);
+
+      if (list.length) {
+        setRouteVehicleId((current) => {
+          if (
+            current &&
+            list.some(
+              (vehicle) =>
+                String(
+                  getEntityId(vehicle)
+                ) === String(current)
+            )
+          ) {
+            return current;
+          }
+
+          return String(
+            getEntityId(list[0])
+          );
+        });
+      } else {
         setRouteVehicleId("");
       }
-    } catch (error) {
-      console.error(error);
-
+    } catch {
       setRouteVehicles([]);
       setRouteVehicleId("");
-
-      setRouteError(
-        error.message || "Failed to load vendor vehicles"
-      );
     } finally {
       setRouteVehicleLoading(false);
     }
   }
 
-  // ============================================================
-  // CHANGE OMS ACTIVE VENDOR
-  // ============================================================
-
-  function handleVendorChange(vendorId) {
-    setSelectedVendorId(String(vendorId));
-
-    setShipmentForm((previous) => ({
-      ...previous,
-      vehicleId: "",
-    }));
-
-    setVendorError("");
-  }
-
-  // ============================================================
-  // ROUTE VENDOR CHANGE
-  // ============================================================
-
-  function handleRouteVendorChange(vendorId) {
-    setRouteVendorId(String(vendorId));
-    setRouteVehicleId("");
-    setRouteError("");
-  }
-
-  // ============================================================
-  // FIND ROUTES
-  // ============================================================
+  /* ==========================================================
+     ROUTE SEARCH
+     ========================================================== */
 
   async function handleFindRoutes(event) {
     event.preventDefault();
 
-    if (!source.trim() || !destination.trim()) {
+    if (
+      !source.trim() ||
+      !destination.trim()
+    ) {
       setRouteError(
-        "Please enter both source and destination."
+        "Please enter both origin and destination."
       );
       return;
     }
 
+    setLoadingRoutes(true);
+    setRouteError("");
+
+    const selectedRouteVehicle =
+      routeVehicles.find(
+        (vehicle) =>
+          String(
+            getEntityId(vehicle)
+          ) === String(routeVehicleId)
+      );
+
+    const requestBody = {
+      source: source.trim(),
+      destination: destination.trim(),
+      urgency,
+
+      vehicle:
+        selectedRouteVehicle || null,
+
+      shipment:
+        routeVendorId && routeVehicleId
+          ? {
+              vehicleId: routeVehicleId,
+              origin: source.trim(),
+              destination:
+                destination.trim(),
+              vendorId: routeVendorId,
+            }
+          : null,
+    };
+
     try {
-      setLoadingRoutes(true);
-      setRouteError("");
-
-      setRoutes([]);
-      setBestRoute(null);
-      setSelectedRoute(null);
-
-      const selectedRouteVehicle =
-        routeVehicles.find(
-          (vehicle) =>
-            String(getEntityId(vehicle)) ===
-            String(routeVehicleId)
-        ) || null;
-
-      const requestBody = {
-        source: source.trim(),
-        destination: destination.trim(),
-        urgency,
-
-        vehicle: selectedRouteVehicle,
-
-        shipment:
-          routeVendorId && routeVehicleId
-            ? {
-                vehicleId: routeVehicleId,
-                origin: source.trim(),
-                destination: destination.trim(),
-                vendorId: routeVendorId,
-              }
-            : null,
-      };
-
       const response = await fetch(
         `${API_BASE}/find-route`,
         {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
+            "Content-Type":
+              "application/json",
           },
-          body: JSON.stringify(requestBody),
+          body: JSON.stringify(
+            requestBody
+          ),
         }
       );
 
@@ -552,72 +607,96 @@ function App() {
 
       if (!response.ok) {
         throw new Error(
-          data.error || "Failed to find routes"
+          data?.error ||
+            "Unable to calculate routes."
         );
       }
 
-      setRouteRequest(data);
+      const routeList = Array.isArray(
+        data.routes
+      )
+        ? data.routes
+        : [];
 
-      setRoutes(
-        Array.isArray(data.routes)
-          ? data.routes
-          : []
+      if (!routeList.length) {
+        throw new Error(
+          "The routing engine did not return any routes."
+        );
+      }
+
+      /*
+       * /find-route returns:
+       *
+       * data.bestRoute = summary
+       * data.routes    = complete routes
+       *
+       * Match the recommended route back
+       * to the complete route list.
+       */
+
+      const recommendedSummary =
+        data.bestRoute || null;
+
+      const recommendedFullRoute =
+        routeList.find(
+          (route) =>
+            recommendedSummary &&
+            route.routeNumber != null &&
+            String(route.routeNumber) ===
+              String(
+                recommendedSummary.routeNumber
+              )
+        ) ||
+        routeList[0] ||
+        null;
+
+      setRoutes(routeList);
+      setBestRoute(
+        recommendedFullRoute
       );
-
-      setBestRoute(data.bestRoute || null);
-
-      if (data.bestRoute) {
-        setSelectedRoute(
-          data.bestRoute.routeNumber
-        );
-      } else if (data.routes?.length) {
-        setSelectedRoute(
-          data.routes[0].routeNumber
-        );
-      }
+      setSelectedRoute(
+        recommendedFullRoute
+      );
+      setRouteRequest(requestBody);
     } catch (error) {
-      console.error(error);
-
       setRouteError(
-        error.message || "Unable to find routes."
+        error.message ||
+          "Unable to calculate routes."
       );
     } finally {
       setLoadingRoutes(false);
     }
   }
 
-  // ============================================================
-  // CREATE VENDOR
-  // ============================================================
+  function handleNewSearch() {
+    setRoutes([]);
+    setBestRoute(null);
+    setSelectedRoute(null);
+    setRouteError("");
+    setRouteRequest(null);
+  }
 
-  async function handleCreateVendor(event) {
+  /* ==========================================================
+     VENDOR CREATION
+     ========================================================== */
+
+  async function handleCreateVendor(
+    event
+  ) {
     event.preventDefault();
 
-    if (
-      !vendorForm.name.trim() ||
-      !vendorForm.email.trim()
-    ) {
-      setVendorError(
-        "Business name and email are required."
-      );
-      return;
-    }
-
     try {
-      setVendorLoading(true);
-      setVendorError("");
-
       const response = await fetch(
         `${API_BASE}/vendors`,
         {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
+            "Content-Type":
+              "application/json",
           },
-          body: JSON.stringify({
-            name: vendorForm.name.trim(),
-            email: vendorForm.email.trim(),
-          }),
+          body: JSON.stringify(
+            vendorForm
+          ),
         }
       );
 
@@ -625,103 +704,68 @@ function App() {
 
       if (!response.ok) {
         throw new Error(
-          data.error || "Failed to create vendor"
+          data?.error ||
+            "Unable to create vendor."
         );
       }
 
-      const newVendorId = getEntityId(data.vendor);
+      setShowVendorForm(false);
 
       setVendorForm({
         name: "",
         email: "",
-        phone: "",
-        address: "",
       });
 
-      setShowVendorForm(false);
+      await loadVendors();
 
-      await loadVendors(newVendorId);
+      const id = getEntityId(
+        data.vendor || data
+      );
+
+      if (id) {
+        setSelectedVendorId(
+          String(id)
+        );
+      }
     } catch (error) {
-      console.error(error);
-
-      setVendorError(
-        error.message || "Failed to create vendor"
-      );
-    } finally {
-      setVendorLoading(false);
+      setVendorError(error.message);
     }
   }
 
-  // ============================================================
-  // OPEN VEHICLE FORM
-  // ============================================================
+  /* ==========================================================
+     VEHICLE CREATION
+     ========================================================== */
 
-  function openVehicleForm() {
-    setVendorError("");
-
-    if (!selectedVendorId) {
-      setVendorError(
-        "Please select a vendor before adding a vehicle."
-      );
-      return;
-    }
-
-    setVehicleForm({
-      registrationNumber: "",
-      vehicleType: "TRUCK",
-      capacity: "",
-      fuelType: "DIESEL",
-    });
-
-    setShowVehicleForm(true);
-  }
-
-  // ============================================================
-  // CREATE VEHICLE
-  // ============================================================
-
-  async function handleCreateVehicle(event) {
+  async function handleAddVehicle(
+    event
+  ) {
     event.preventDefault();
 
     if (!selectedVendorId) {
-      setVendorError(
-        "Select a vendor before adding a vehicle."
-      );
-      return;
-    }
-
-    if (
-      !vehicleForm.registrationNumber.trim() ||
-      !vehicleForm.capacity
-    ) {
-      setVendorError(
-        "Registration number and capacity are required."
-      );
       return;
     }
 
     try {
-      setVehicleLoading(true);
-      setVendorError("");
-
       const response = await fetch(
         `${API_BASE}/vendors/${selectedVendorId}/vehicles`,
         {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
+            "Content-Type":
+              "application/json",
           },
           body: JSON.stringify({
             registrationNumber:
-              vehicleForm.registrationNumber
-                .trim()
-                .toUpperCase(),
+              vehicleForm.registrationNumber,
 
-            vehicleType: vehicleForm.vehicleType,
+            vehicleType:
+              vehicleForm.vehicleType,
 
-            capacity: Number(vehicleForm.capacity),
+            capacity:
+              vehicleForm.capacity,
 
-            fuelType: vehicleForm.fuelType,
+            fuelType:
+              vehicleForm.fuelType,
           }),
         }
       );
@@ -730,156 +774,53 @@ function App() {
 
       if (!response.ok) {
         throw new Error(
-          data.error || "Failed to create vehicle"
+          data?.error ||
+            "Unable to add vehicle."
         );
       }
 
-      setVehicleForm({
-        registrationNumber: "",
-        vehicleType: "TRUCK",
-        capacity: "",
-        fuelType: "DIESEL",
-      });
-
       setShowVehicleForm(false);
 
-      await loadVendorVehicles(selectedVendorId);
+      setVehicleForm({
+        registrationNumber: "",
+        vehicleType: "Truck",
+        capacity: "",
+        fuelType: "Diesel",
+      });
 
-      // If the same vendor is being used in
-      // Route Intelligence, refresh its vehicle list too.
-      if (
-        String(routeVendorId) ===
-        String(selectedVendorId)
-      ) {
-        await loadRouteVehicles(selectedVendorId);
-      }
+      await loadVendorVehicles(
+        selectedVendorId
+      );
     } catch (error) {
-      console.error(error);
-
-      setVendorError(
-        error.message || "Failed to create vehicle"
-      );
-    } finally {
-      setVehicleLoading(false);
+      setVendorError(error.message);
     }
   }
 
-  // ============================================================
-  // OPEN NORMAL SHIPMENT FORM
-  // ============================================================
+  /* ==========================================================
+     SHIPMENT CREATION
+     ========================================================== */
 
-  function openShipmentForm() {
-    setVendorError("");
-
-    if (!selectedVendorId) {
-      setVendorError(
-        "Please select a vendor before creating a shipment."
-      );
-      return;
-    }
-
-    setShipmentForm({
-      vehicleId: "",
-      origin: "",
-      destination: "",
-      shipmentType: "GENERAL",
-      load: "",
-    });
-
-    setShowShipmentForm(true);
-  }
-
-  // ============================================================
-  // CREATE SHIPMENT FROM A CALCULATED ROUTE
-  // ============================================================
-
-  function openShipmentFromRoute(route) {
-    if (!routeVendorId) {
-      setRouteError(
-        "Select a vendor before creating a shipment."
-      );
-      return;
-    }
-
-    if (!routeVehicleId) {
-      setRouteError(
-        "Select a vehicle before creating a shipment."
-      );
-      return;
-    }
-
-    // Switch OMS context to the vendor attached
-    // to this route.
-    setSelectedVendorId(routeVendorId);
-
-    setShipmentForm({
-      vehicleId: routeVehicleId,
-      origin: source.trim(),
-      destination: destination.trim(),
-      shipmentType: "GENERAL",
-      load: "",
-    });
-
-    setVendorError("");
-    setShowShipmentForm(true);
-  }
-
-  // ============================================================
-  // CREATE SHIPMENT
-  // ============================================================
-
-  async function handleCreateShipment(event) {
+  async function handleCreateShipment(
+    event
+  ) {
     event.preventDefault();
 
     if (!selectedVendorId) {
-      setVendorError("Select a vendor first.");
-      return;
-    }
-
-    if (!shipmentForm.vehicleId) {
-      setVendorError("Select a vehicle.");
-      return;
-    }
-
-    if (
-      !shipmentForm.origin.trim() ||
-      !shipmentForm.destination.trim()
-    ) {
-      setVendorError(
-        "Origin and destination are required."
-      );
-      return;
-    }
-
-    if (!shipmentForm.load) {
-      setVendorError("Enter the shipment load.");
       return;
     }
 
     try {
-      setShipmentLoading(true);
-      setVendorError("");
-
       const response = await fetch(
         `${API_BASE}/vendors/${selectedVendorId}/shipments`,
         {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
+            "Content-Type":
+              "application/json",
           },
-          body: JSON.stringify({
-            vehicleId: shipmentForm.vehicleId,
-
-            origin: shipmentForm.origin.trim(),
-
-            destination:
-              shipmentForm.destination.trim(),
-
-            shipmentType:
-              shipmentForm.shipmentType,
-
-            load: Number(shipmentForm.load),
-          }),
+          body: JSON.stringify(
+            shipmentForm
+          ),
         }
       );
 
@@ -887,110 +828,186 @@ function App() {
 
       if (!response.ok) {
         throw new Error(
-          data.error || "Failed to create shipment"
+          data?.error ||
+            "Unable to create shipment."
         );
       }
+
+      setShowShipmentForm(false);
 
       setShipmentForm({
         vehicleId: "",
         origin: "",
         destination: "",
-        shipmentType: "GENERAL",
+        shipmentType: "General",
         load: "",
       });
 
-      setShowShipmentForm(false);
-
-      await loadVendorShipments(selectedVendorId);
-    } catch (error) {
-      console.error(error);
-
-      setVendorError(
-        error.message || "Failed to create shipment"
+      await loadVendorShipments(
+        selectedVendorId
       );
-    } finally {
-      setShipmentLoading(false);
+    } catch (error) {
+      setVendorError(error.message);
     }
   }
 
-  // ============================================================
-  // MAP DATA
-  // ============================================================
-
-  const routePolylines = useMemo(() => {
-    return routes
-      .filter(
-        (route) =>
-          Array.isArray(route.coordinates) &&
-          route.coordinates.length > 1
-      )
-      .map((route) => ({
-        ...route,
-
-        positions: route.coordinates.map(
-          ([lng, lat]) => [lat, lng]
-        ),
-      }));
-  }, [routes]);
-
-  const selectedRouteData =
-    routes.find(
-      (route) =>
-        Number(route.routeNumber) ===
-        Number(selectedRoute)
-    ) || null;
-
-  const mapCenter = useMemo(() => {
-    if (selectedRouteData?.coordinates?.length) {
-      const [lng, lat] =
-        selectedRouteData.coordinates[
-          Math.floor(
-            selectedRouteData.coordinates.length / 2
-          )
-        ];
-
-      return [lat, lng];
+  function openShipmentFromRoute() {
+    if (
+      !routeVendorId ||
+      !routeVehicleId
+    ) {
+      setRouteError(
+        "Select a vendor and vehicle before creating a shipment."
+      );
+      return;
     }
 
-    return defaultCenter;
-  }, [selectedRouteData]);
-
-  const selectedVendor = vendors.find(
-    (vendor) =>
-      String(getEntityId(vendor)) ===
-      String(selectedVendorId)
-  );
-
-  const selectedRouteVendor = vendors.find(
-    (vendor) =>
-      String(getEntityId(vendor)) ===
+    setSelectedVendorId(
       String(routeVendorId)
+    );
+
+    setShipmentForm({
+      vehicleId: routeVehicleId,
+      origin: source,
+      destination,
+      shipmentType: "General",
+      load: "",
+    });
+
+    setShowShipmentForm(true);
+  }
+
+  /* ==========================================================
+     DERIVED DATA
+     ========================================================== */
+
+  const selectedVendor = useMemo(
+    () =>
+      vendors.find(
+        (vendor) =>
+          String(
+            getEntityId(vendor)
+          ) ===
+          String(selectedVendorId)
+      ) || null,
+    [vendors, selectedVendorId]
   );
 
-  // ============================================================
-  // UI
-  // ============================================================
+  const selectedRouteVendor =
+    useMemo(
+      () =>
+        vendors.find(
+          (vendor) =>
+            String(
+              getEntityId(vendor)
+            ) ===
+            String(routeVendorId)
+        ) || null,
+      [vendors, routeVendorId]
+    );
+
+  /*
+   * Backend:
+   * [longitude, latitude]
+   *
+   * Leaflet:
+   * [latitude, longitude]
+   */
+
+  const routePolylines = useMemo(
+    () =>
+      routes
+        .map((route, index) => ({
+          route,
+
+          positions:
+            getValidCoordinates(route)
+              .map(
+                ([lng, lat]) => [
+                  Number(lat),
+                  Number(lng),
+                ]
+              ),
+
+          color:
+            routeColors[
+              index %
+                routeColors.length
+            ],
+        }))
+        .filter(
+          (item) =>
+            item.positions.length > 1
+        ),
+    [routes]
+  );
+
+  const selectedRouteData =
+    selectedRoute ||
+    bestRoute ||
+    routes[0] ||
+    null;
+
+  const selectedPositions =
+    getValidCoordinates(
+      selectedRouteData
+    );
+
+  const middlePoint =
+    selectedPositions.length > 0
+      ? selectedPositions[
+          Math.floor(
+            selectedPositions.length / 2
+          )
+        ]
+      : null;
+
+  const mapCenter = middlePoint
+    ? [
+        Number(middlePoint[1]),
+        Number(middlePoint[0]),
+      ]
+    : defaultCenter;
+
+  const selectedRouteScore =
+    getSafetyScore(
+      selectedRouteData
+    );
+
+  /* ==========================================================
+     RENDER
+     ========================================================== */
 
   return (
     <div className="app-shell">
+
       {/* ======================================================
           SIDEBAR
           ====================================================== */}
 
-      <aside className="sidebar">
+      <aside className="sidebar glass">
+
         <div className="brand">
-          <div className="brand-mark">S</div>
+
+          <div className="brand-mark">
+            S
+          </div>
 
           <div>
-            <div className="brand-name">SILP</div>
+            <div className="brand-name">
+              SILP
+            </div>
 
             <div className="brand-subtitle">
-              Smart Intelligence Logistics Platform
+              Smart Intelligence Logistics
+              Platform
             </div>
           </div>
+
         </div>
 
-        <nav className="main-nav">
+        <nav className="sidebar-nav">
+
           <button
             className={`nav-item ${
               activeSection === "routing"
@@ -998,11 +1015,24 @@ function App() {
                 : ""
             }`}
             onClick={() =>
-              setActiveSection("routing")
+              setActiveSection(
+                "routing"
+              )
             }
           >
-            <span className="nav-icon">⌁</span>
-            <span>Route Intelligence</span>
+            <span className="nav-icon">
+              ⌁
+            </span>
+
+            <span>
+              <strong>
+                Route Intelligence
+              </strong>
+
+              <small>
+                Weather-aware routing
+              </small>
+            </span>
           </button>
 
           <button
@@ -1012,24 +1042,52 @@ function App() {
                 : ""
             }`}
             onClick={() =>
-              setActiveSection("vendor")
+              setActiveSection(
+                "vendor"
+              )
             }
           >
-            <span className="nav-icon">▣</span>
-            <span>Vendor OMS</span>
+            <span className="nav-icon">
+              ▣
+            </span>
+
+            <span>
+              <strong>
+                Vendor OMS
+              </strong>
+
+              <small>
+                Fleet & shipments
+              </small>
+            </span>
           </button>
+
         </nav>
 
         <div className="sidebar-bottom">
+
           <div className="system-status">
-            <span className="status-dot"></span>
+
+            <span className="status-dot" />
 
             <div>
-              <strong>System online</strong>
-              <span>Backend v0.3</span>
+              <strong>
+                System operational
+              </strong>
+
+              <small>
+                Routing engine online
+              </small>
             </div>
+
           </div>
+
+          <div className="sidebar-version">
+            SILP • v0.4
+          </div>
+
         </div>
+
       </aside>
 
       {/* ======================================================
@@ -1037,1175 +1095,1698 @@ function App() {
           ====================================================== */}
 
       <main className="main-content">
+
         <header className="topbar">
+
           <div>
-            <p className="eyebrow">
-              {activeSection === "routing"
-                ? "ROUTE INTELLIGENCE"
-                : "VENDOR OPERATIONS"}
-            </p>
+            <span className="eyebrow">
+              LOGISTICS INTELLIGENCE
+            </span>
 
             <h1>
               {activeSection === "routing"
-                ? "Plan a safer journey."
-                : "Manage your logistics fleet."}
+                ? "Route Intelligence"
+                : "Vendor Operations"}
             </h1>
           </div>
 
-          <div className="topbar-badge">
-            <span className="status-dot"></span>
-            Live system
+          <div className="topbar-status">
+
+            <span className="live-dot" />
+
+            Live conditions
+
           </div>
+
         </header>
 
         {/* ====================================================
             ROUTING PAGE
             ==================================================== */}
 
-        {activeSection === "routing" ? (
+        {activeSection === "routing" && (
           <section className="routing-page">
+
             <div className="route-workspace">
-              {/* ================= LEFT ROUTE PANEL ================= */}
 
-              <div className="route-panel">
-                <div className="panel-heading">
-                  <div>
-                    <p className="section-label">
-                      NEW ROUTE
-                    </p>
+              {/* ==================================================
+                  LEFT ROUTE PANEL
+                  ================================================== */}
 
-                    <h2>
-                      Where are you going?
-                    </h2>
-                  </div>
-                </div>
+              <section className="route-panel glass">
 
-                <form
-                  onSubmit={handleFindRoutes}
-                  className="route-form"
-                >
-                  {/* ORIGIN */}
+                {/* =================================================
+                    SEARCH SCREEN
+                    ================================================= */}
 
-                  <div className="location-input">
-                    <span className="location-marker source-marker">
-                      A
-                    </span>
+                {routes.length === 0 ? (
 
-                    <div className="input-wrapper">
-                      <label>Origin</label>
+                  <div className="search-screen">
 
-                      <input
-                        value={source}
-                        onChange={(event) =>
-                          setSource(
-                            event.target.value
-                          )
-                        }
-                        placeholder="e.g. Guwahati"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="location-connector"></div>
-
-                  {/* DESTINATION */}
-
-                  <div className="location-input">
-                    <span className="location-marker destination-marker">
-                      B
-                    </span>
-
-                    <div className="input-wrapper">
-                      <label>Destination</label>
-
-                      <input
-                        value={destination}
-                        onChange={(event) =>
-                          setDestination(
-                            event.target.value
-                          )
-                        }
-                        placeholder="e.g. Imphal"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="form-divider"></div>
-
-                  {/* URGENCY */}
-
-                  <div className="form-field">
-                    <label>
-                      Shipment urgency
-                    </label>
-
-                    <select
-                      value={urgency}
-                      onChange={(event) =>
-                        setUrgency(
-                          event.target.value
-                        )
-                      }
-                    >
-                      <option value="LOW">
-                        Low
-                      </option>
-
-                      <option value="MEDIUM">
-                        Medium
-                      </option>
-
-                      <option value="HIGH">
-                        High
-                      </option>
-
-                      <option value="CRITICAL">
-                        Critical
-                      </option>
-                    </select>
-                  </div>
-
-                  {/* ROUTE VENDOR */}
-
-                  <div className="form-field">
-                    <label>
-                      Vendor fleet
-                    </label>
-
-                    <select
-                      value={routeVendorId}
-                      onChange={(event) =>
-                        handleRouteVendorChange(
-                          event.target.value
-                        )
-                      }
-                    >
-                      <option value="">
-                        Select vendor
-                      </option>
-
-                      {vendors.map((vendor) => (
-                        <option
-                          key={getEntityId(
-                            vendor
-                          )}
-                          value={getEntityId(
-                            vendor
-                          )}
-                        >
-                          {vendor.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* ROUTE VEHICLE */}
-
-                  <div className="form-field">
-                    <label>
-                      Vehicle
-                    </label>
-
-                    <select
-                      value={routeVehicleId}
-                      onChange={(event) =>
-                        setRouteVehicleId(
-                          event.target.value
-                        )
-                      }
-                      disabled={
-                        !routeVendorId ||
-                        routeVehicleLoading
-                      }
-                    >
-                      <option value="">
-                        {!routeVendorId
-                          ? "Select vendor first"
-                          : routeVehicleLoading
-                          ? "Loading vehicles..."
-                          : routeVehicles.length ===
-                            0
-                          ? "No active vehicles"
-                          : "Select vehicle"}
-                      </option>
-
-                      {routeVehicles.map(
-                        (vehicle) => (
-                          <option
-                            key={getEntityId(
-                              vehicle
-                            )}
-                            value={getEntityId(
-                              vehicle
-                            )}
-                          >
-                            {
-                              vehicle.registrationNumber
-                            }{" "}
-                            —{" "}
-                            {
-                              vehicle.vehicleType
-                            }
-                          </option>
-                        )
-                      )}
-                    </select>
-                  </div>
-
-                  {selectedRouteVendor && (
-                    <div className="selected-vendor-mini">
-                      <div className="mini-avatar">
-                        {selectedRouteVendor.name
-                          ?.charAt(0)
-                          ?.toUpperCase()}
-                      </div>
+                    <div className="panel-heading">
 
                       <div>
-                        <span>
-                          Routing with vendor fleet
+
+                        <span className="section-kicker">
+                          ROUTE PLANNER
                         </span>
 
-                        <strong>
-                          {selectedRouteVendor.name}
-                        </strong>
-                      </div>
-                    </div>
-                  )}
+                        <h2>
+                          Find a safer route
+                        </h2>
 
-                  <button
-                    type="submit"
-                    className="primary-button"
-                    disabled={loadingRoutes}
-                  >
-                    {loadingRoutes ? (
-                      <>
-                        <span className="spinner"></span>
-                        Analysing routes...
-                      </>
-                    ) : (
-                      <>
-                        Find safe routes
-                        <span>→</span>
-                      </>
-                    )}
-                  </button>
-                </form>
+                        <p>
+                          Compare routes using
+                          live weather and
+                          disaster conditions.
+                        </p>
 
-                {routeError && (
-                  <div className="error-box">
-                    {routeError}
-                  </div>
-                )}
-
-                {/* ROUTE RESULTS */}
-
-                <div className="route-results-header">
-                  <div>
-                    <p className="section-label">
-                      RESULTS
-                    </p>
-
-                    <h2>
-                      {routes.length
-                        ? `${routes.length} routes found`
-                        : "Routes will appear here"}
-                    </h2>
-                  </div>
-
-                  {bestRoute && (
-                    <span className="recommended-pill">
-                      Recommended · Route{" "}
-                      {bestRoute.routeNumber}
-                    </span>
-                  )}
-                </div>
-
-                <div className="route-list">
-                  {routes.length === 0 &&
-                  !loadingRoutes ? (
-                    <div className="empty-routes">
-                      <div className="empty-icon">
-                        ⌁
                       </div>
 
-                      <strong>
-                        Ready to route
-                      </strong>
+                      <div className="heading-badge">
+                        <span />
+                        LIVE
+                      </div>
 
-                      <span>
-                        Enter an origin and
-                        destination to compare
-                        environmental safety
-                        across available routes.
-                      </span>
-                    </div>
-                  ) : (
-                    routes.map((route) => {
-                      const isRecommended =
-                        Number(
-                          route.routeNumber
-                        ) ===
-                        Number(
-                          bestRoute?.routeNumber
-                        );
-
-                      const isSelected =
-                        Number(
-                          route.routeNumber
-                        ) ===
-                        Number(selectedRoute);
-
-                      const safetyClass =
-                        getSafetyClass(
-                          route.safetyScore
-                        );
-
-                      const color =
-                        routeColors[
-                          (Number(
-                            route.routeNumber
-                          ) -
-                            1) %
-                            routeColors.length
-                        ];
-
-                      return (
-                        <div
-                          key={
-                            route.routeNumber
-                          }
-                          className={`route-card ${
-                            isSelected
-                              ? "selected"
-                              : ""
-                          }`}
-                          onClick={() =>
-                            setSelectedRoute(
-                              route.routeNumber
-                            )
-                          }
-                        >
-                          <div className="route-card-top">
-                            <div className="route-title">
-                              <span
-                                className="route-number"
-                                style={{
-                                  borderColor:
-                                    color,
-                                  color,
-                                }}
-                              >
-                                {
-                                  route.routeNumber
-                                }
-                              </span>
-
-                              <div>
-                                <strong>
-                                  Route{" "}
-                                  {
-                                    route.routeNumber
-                                  }
-                                </strong>
-
-                                {isRecommended && (
-                                  <span className="recommended-label">
-                                    Recommended
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-
-                            <div
-                              className={`safety-score ${safetyClass}`}
-                            >
-                              <span>
-                                SAFETY
-                              </span>
-
-                              <strong>
-                                {route.safetyScore ??
-                                  "--"}
-                              </strong>
-                            </div>
-                          </div>
-
-                          <div className="route-metrics">
-                            <div>
-                              <span>
-                                Distance
-                              </span>
-
-                              <strong>
-                                {route.distanceKm ??
-                                  "--"}{" "}
-                                km
-                              </strong>
-                            </div>
-
-                            <div>
-                              <span>ETA</span>
-
-                              <strong>
-                                {formatDuration(
-                                  route.durationMin
-                                )}
-                              </strong>
-                            </div>
-
-                            <div>
-                              <span>Risk</span>
-
-                              <strong>
-                                {getRiskLabel(
-                                  route.hazardRisk
-                                )}
-                              </strong>
-                            </div>
-                          </div>
-
-                          <div className="route-hazard">
-                            <span className="hazard-dot"></span>
-
-                            {getHazardMessage(
-                              route
-                            )}
-                          </div>
-
-                          {/* CREATE SHIPMENT */}
-
-                          {routeVendorId &&
-                            routeVehicleId && (
-                              <button
-                                type="button"
-                                className="route-shipment-button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-
-                                  openShipmentFromRoute(
-                                    route
-                                  );
-                                }}
-                              >
-                                Create shipment
-                                <span>→</span>
-                              </button>
-                            )}
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-
-              {/* ================= MAP ================= */}
-
-              <div className="map-panel">
-                <div className="map-overlay">
-                  <div className="map-title">
-                    <span className="live-dot"></span>
-
-                    Live route analysis
-                  </div>
-
-                  {selectedRouteData && (
-                    <div className="map-route-summary">
-                      <span>
-                        Route{" "}
-                        {
-                          selectedRouteData.routeNumber
-                        }
-                      </span>
-
-                      <strong>
-                        {
-                          selectedRouteData.safetyScore
-                        }
-                        /100
-                      </strong>
-                    </div>
-                  )}
-                </div>
-
-                <MapContainer
-                  center={mapCenter}
-                  zoom={5}
-                  className="map-container"
-                  scrollWheelZoom
-                >
-                  <TileLayer
-                    attribution="&copy; OpenStreetMap contributors"
-                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                  />
-
-                  <FitRoutes
-                    routes={routePolylines}
-                  />
-
-                  {routePolylines.map(
-                    (route, index) => {
-                      const isSelected =
-                        Number(
-                          route.routeNumber
-                        ) ===
-                        Number(selectedRoute);
-
-                      return (
-                        <Polyline
-                          key={
-                            route.routeNumber
-                          }
-                          positions={
-                            route.positions
-                          }
-                          pathOptions={{
-                            color:
-                              routeColors[
-                                index %
-                                  routeColors.length
-                              ],
-                            weight:
-                              isSelected ? 6 : 3,
-                            opacity:
-                              isSelected
-                                ? 0.95
-                                : 0.35,
-                          }}
-                          eventHandlers={{
-                            click: () =>
-                              setSelectedRoute(
-                                route.routeNumber
-                              ),
-                          }}
-                        />
-                      );
-                    }
-                  )}
-
-                  {routePolylines.length > 0 && (
-                    <>
-                      <Marker
-                        position={
-                          routePolylines[0]
-                            .positions[0]
-                        }
-                        icon={markerIcon}
-                      >
-                        <Popup>
-                          <strong>
-                            Origin
-                          </strong>
-
-                          <br />
-
-                          {routeRequest
-                            ?.source?.name ||
-                            source}
-                        </Popup>
-                      </Marker>
-
-                      <Marker
-                        position={
-                          routePolylines[0]
-                            .positions[
-                            routePolylines[0]
-                              .positions
-                              .length - 1
-                          ]
-                        }
-                        icon={markerIcon}
-                      >
-                        <Popup>
-                          <strong>
-                            Destination
-                          </strong>
-
-                          <br />
-
-                          {routeRequest
-                            ?.destination
-                            ?.name ||
-                            destination}
-                        </Popup>
-                      </Marker>
-                    </>
-                  )}
-                </MapContainer>
-
-                {!routes.length && (
-                  <div className="map-empty-state">
-                    <div className="map-empty-icon">
-                      ⌖
                     </div>
 
-                    <strong>
-                      Route map
-                    </strong>
-
-                    <span>
-                      Your analysed routes will
-                      be displayed here.
-                    </span>
-                  </div>
-                )}
-
-                {selectedRouteData && (
-                  <div className="map-bottom-card">
-                    <div>
-                      <span>
-                        Selected route
-                      </span>
-
-                      <strong>
-                        Route{" "}
-                        {
-                          selectedRouteData.routeNumber
-                        }
-                      </strong>
-                    </div>
-
-                    <div>
-                      <span>Distance</span>
-
-                      <strong>
-                        {
-                          selectedRouteData.distanceKm
-                        }{" "}
-                        km
-                      </strong>
-                    </div>
-
-                    <div>
-                      <span>ETA</span>
-
-                      <strong>
-                        {formatDuration(
-                          selectedRouteData.durationMin
-                        )}
-                      </strong>
-                    </div>
-
-                    <div>
-                      <span>Safety</span>
-
-                      <strong>
-                        {
-                          selectedRouteData.safetyScore
-                        }
-                        /100
-                      </strong>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-          </section>
-        ) : (
-          /* ====================================================
-             VENDOR OMS PAGE
-             ==================================================== */
-
-          <section className="vendor-page">
-            {/* VENDOR TOOLBAR */}
-
-            <div className="vendor-toolbar">
-              <div>
-                <p className="section-label">
-                  VENDOR OMS
-                </p>
-
-                <h2>
-                  Fleet & shipment operations
-                </h2>
-              </div>
-
-              <div className="vendor-toolbar-actions">
-                {/* ACTIVE VENDOR DROPDOWN REMOVED */}
-
-                <button
-                  className="primary-button compact"
-                  onClick={() =>
-                    setShowVendorForm(true)
-                  }
-                >
-                  + Add vendor
-                </button>
-              </div>
-            </div>
-
-            {/* ERROR */}
-
-            {vendorError && (
-              <div className="error-box vendor-error">
-                {vendorError}
-              </div>
-            )}
-
-            <div className="vendor-grid">
-              {/* =================================================
-                  VENDOR LIST
-                  ================================================= */}
-
-              <div className="vendor-selector-card">
-                <div className="card-header">
-                  <div>
-                    <span className="section-label">
-                      VENDORS
-                    </span>
-
-                    <h3>
-                      Your businesses
-                    </h3>
-                  </div>
-
-                  <span className="count-badge">
-                    {vendors.length}
-                  </span>
-                </div>
-
-                {vendorLoading &&
-                vendors.length === 0 ? (
-                  <div className="loading-state">
-                    Loading vendors...
-                  </div>
-                ) : vendors.length === 0 ? (
-                  <div className="empty-card">
-                    <strong>
-                      No vendors yet
-                    </strong>
-
-                    <span>
-                      Create your first vendor
-                      account to start managing
-                      a fleet.
-                    </span>
-
-                    <button
-                      className="secondary-button"
-                      onClick={() =>
-                        setShowVendorForm(
-                          true
-                        )
+                    <form
+                      className="route-form"
+                      onSubmit={
+                        handleFindRoutes
                       }
                     >
-                      Create vendor
-                    </button>
-                  </div>
-                ) : (
-                  <div className="vendor-list">
-                    {vendors.map((vendor) => {
-                      const vendorId =
-                        getEntityId(vendor);
 
-                      const isActive =
-                        String(vendorId) ===
-                        String(
-                          selectedVendorId
-                        );
+                      <div className="form-field">
 
-                      return (
-                        <button
-                          key={vendorId}
-                          className={`vendor-item ${
-                            isActive
-                              ? "active"
-                              : ""
-                          }`}
-                          onClick={() =>
-                            handleVendorChange(
-                              vendorId
-                            )
-                          }
-                        >
+                        <label>
+                          Origin
+                        </label>
+
+                        <div className="input-shell">
+
+                          <span className="input-dot origin-dot" />
+
+                          <input
+                            value={source}
+                            onChange={(e) =>
+                              setSource(
+                                e.target.value
+                              )
+                            }
+                            placeholder="Enter starting location"
+                          />
+
+                        </div>
+
+                      </div>
+
+                      <div className="route-connector">
+                        <span />
+                      </div>
+
+                      <div className="form-field">
+
+                        <label>
+                          Destination
+                        </label>
+
+                        <div className="input-shell">
+
+                          <span className="input-dot destination-dot" />
+
+                          <input
+                            value={destination}
+                            onChange={(e) =>
+                              setDestination(
+                                e.target.value
+                              )
+                            }
+                            placeholder="Enter destination"
+                          />
+
+                        </div>
+
+                      </div>
+
+                      <div className="form-grid">
+
+                        <div className="form-field">
+
+                          <label>
+                            Urgency
+                          </label>
+
+                          <select
+                            value={urgency}
+                            onChange={(e) =>
+                              setUrgency(
+                                e.target.value
+                              )
+                            }
+                          >
+                            <option value="LOW">
+                              Low
+                            </option>
+
+                            <option value="MEDIUM">
+                              Medium
+                            </option>
+
+                            <option value="HIGH">
+                              High
+                            </option>
+
+                            <option value="CRITICAL">
+                              Critical
+                            </option>
+                          </select>
+
+                        </div>
+
+                        <div className="form-field">
+
+                          <label>
+                            Vendor
+                          </label>
+
+                          <select
+                            value={
+                              routeVendorId
+                            }
+                            onChange={(e) => {
+                              setRouteVendorId(
+                                e.target.value
+                              );
+
+                              setRouteVehicleId(
+                                ""
+                              );
+                            }}
+                          >
+
+                            <option value="">
+                              No vendor
+                            </option>
+
+                            {vendors.map(
+                              (vendor) => {
+
+                                const id =
+                                  getEntityId(
+                                    vendor
+                                  );
+
+                                return (
+                                  <option
+                                    key={id}
+                                    value={id}
+                                  >
+                                    {vendor.name ||
+                                      "Unnamed vendor"}
+                                  </option>
+                                );
+                              }
+                            )}
+
+                          </select>
+
+                        </div>
+
+                      </div>
+
+                      {routeVendorId && (
+
+                        <div className="form-field vehicle-field">
+
+                          <label>
+                            Vehicle
+                          </label>
+
+                          <select
+                            value={
+                              routeVehicleId
+                            }
+                            onChange={(e) =>
+                              setRouteVehicleId(
+                                e.target.value
+                              )
+                            }
+                            disabled={
+                              routeVehicleLoading
+                            }
+                          >
+
+                            <option value="">
+                              {routeVehicleLoading
+                                ? "Loading vehicles..."
+                                : "Select vehicle"}
+                            </option>
+
+                            {routeVehicles.map(
+                              (vehicle) => {
+
+                                const id =
+                                  getEntityId(
+                                    vehicle
+                                  );
+
+                                return (
+                                  <option
+                                    key={id}
+                                    value={id}
+                                  >
+                                    {vehicle.registrationNumber ||
+                                      vehicle.vehicleNumber ||
+                                      "Vehicle"}
+                                  </option>
+                                );
+                              }
+                            )}
+
+                          </select>
+
+                        </div>
+
+                      )}
+
+                      {selectedRouteVendor && (
+
+                        <div className="selected-vendor">
+
                           <div className="vendor-avatar">
-                            {vendor.name
-                              ?.charAt(0)
-                              ?.toUpperCase()}
+                            {(
+                              selectedRouteVendor.name ||
+                              "V"
+                            )
+                              .charAt(0)
+                              .toUpperCase()}
                           </div>
 
-                          <div className="vendor-info">
+                          <div>
+
                             <strong>
-                              {vendor.name}
+                              {
+                                selectedRouteVendor.name
+                              }
                             </strong>
 
                             <span>
-                              {vendor.email}
+                              Selected logistics
+                              partner
                             </span>
+
                           </div>
 
-                          <span className="vendor-arrow">
-                            →
+                          <span className="vendor-check">
+                            ✓
                           </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
 
-              {/* =================================================
-                  ACTIVE VENDOR
-                  ================================================= */}
-
-              <div className="vendor-main">
-                {selectedVendor ? (
-                  <>
-                    {/* VENDOR PROFILE */}
-
-                    <div className="vendor-profile-card">
-                      <div className="vendor-profile-main">
-                        <div className="large-avatar">
-                          {selectedVendor.name
-                            ?.charAt(0)
-                            ?.toUpperCase()}
                         </div>
 
+                      )}
+
+                      <button
+                        className="primary-button"
+                        type="submit"
+                        disabled={
+                          loadingRoutes
+                        }
+                      >
+
+                        {loadingRoutes ? (
+                          <>
+                            <span className="spinner" />
+                            Analysing routes...
+                          </>
+                        ) : (
+                          <>
+                            <span>⌁</span>
+                            Find safe routes
+                          </>
+                        )}
+
+                      </button>
+
+                    </form>
+
+                    {routeError && (
+
+                      <div className="route-error">
+
+                        <span>!</span>
+
+                        {routeError}
+
+                      </div>
+
+                    )}
+
+                    <div className="search-footer">
+
+                      <span>
+                        ◈
+                      </span>
+
+                      <p>
+                        Safety analysis uses
+                        current environmental
+                        conditions rather than
+                        distance alone.
+                      </p>
+
+                    </div>
+
+                  </div>
+
+                ) : (
+
+                  /* =================================================
+                     ANALYSIS SCREEN
+                     ================================================= */
+
+                  <div className="analysis-screen">
+
+                    <div className="analysis-header">
+
+                      <div className="analysis-title">
+
+                        <button
+                          className="back-button"
+                          onClick={
+                            handleNewSearch
+                          }
+                          type="button"
+                        >
+                          ←
+                        </button>
+
                         <div>
-                          <span className="section-label">
-                            ACTIVE VENDOR
+
+                          <span className="section-kicker">
+                            ROUTE ANALYSIS
                           </span>
 
                           <h2>
-                            {selectedVendor.name}
+                            Live route intelligence
                           </h2>
 
                           <p>
-                            {
-                              selectedVendor.email
-                            }
+                            {source}
+                            <span>
+                              {" "}
+                              →{" "}
+                            </span>
+                            {destination}
                           </p>
+
                         </div>
+
                       </div>
 
-                      <div className="vendor-stats">
-                        <div>
-                          <span>Fleet</span>
+                      <button
+                        className="new-search-button"
+                        onClick={
+                          handleNewSearch
+                        }
+                        type="button"
+                      >
+                        + New search
+                      </button>
 
-                          <strong>
-                            {vehicles.length}
-                          </strong>
-                        </div>
-
-                        <div>
-                          <span>
-                            Shipments
-                          </span>
-
-                          <strong>
-                            {shipments.length}
-                          </strong>
-                        </div>
-
-                        <div>
-                          <span>
-                            Green score
-                          </span>
-
-                          <strong>
-                            {selectedVendor.greenScore ??
-                              "--"}
-                          </strong>
-                        </div>
-                      </div>
                     </div>
 
-                    {/* =================================================
-                        FLEET
-                        ================================================= */}
+                    {routeError && (
 
-                    <div className="oms-section">
-                      <div className="card-header">
-                        <div>
-                          <span className="section-label">
-                            FLEET
-                          </span>
+                      <div className="route-error">
 
-                          <h3>
-                            Vehicles
-                          </h3>
-                        </div>
+                        <span>!</span>
 
-                        <button
-                          className="secondary-button"
-                          onClick={
-                            openVehicleForm
-                          }
-                        >
-                          + Vehicle
-                        </button>
+                        {routeError}
+
                       </div>
 
-                      {vehicleLoading ? (
-                        <div className="loading-state">
-                          Loading fleet...
-                        </div>
-                      ) : vehicles.length ===
-                        0 ? (
-                        <div className="empty-card horizontal">
+                    )}
+
+                    {/* =============================================
+                        RECOMMENDED ROUTE
+                        ============================================= */}
+
+                    {bestRoute && (
+
+                      <div className="recommended-analysis">
+
+                        <div className="recommended-heading">
+
                           <div>
+
+                            <span className="section-kicker">
+                              RECOMMENDED
+                            </span>
+
+                            <h3>
+                              Safest available route
+                            </h3>
+
+                          </div>
+
+                          <div
+                            className={`large-safety ${getSafetyClass(
+                              getSafetyScore(
+                                bestRoute
+                              )
+                            )}`}
+                          >
+
                             <strong>
-                              No vehicles
-                              registered
+                              {Math.round(
+                                getSafetyScore(
+                                  bestRoute
+                                )
+                              )}
+                              %
                             </strong>
 
                             <span>
-                              Add a vehicle to
-                              associate it with
-                              this vendor.
+                              safety
                             </span>
+
                           </div>
+
                         </div>
-                      ) : (
-                        <div className="vehicle-grid">
-                          {vehicles.map(
-                            (vehicle) => (
-                              <div
-                                className="vehicle-card"
-                                key={getEntityId(
-                                  vehicle
+
+                        <div className="analysis-route-path">
+
+                          <div className="path-point">
+
+                            <span className="path-dot start" />
+
+                            <div>
+
+                              <small>
+                                ORIGIN
+                              </small>
+
+                              <strong>
+                                {source}
+                              </strong>
+
+                            </div>
+
+                          </div>
+
+                          <div className="path-line">
+                            <span />
+                          </div>
+
+                          <div className="path-point">
+
+                            <span className="path-dot end" />
+
+                            <div>
+
+                              <small>
+                                DESTINATION
+                              </small>
+
+                              <strong>
+                                {destination}
+                              </strong>
+
+                            </div>
+
+                          </div>
+
+                        </div>
+
+                        <div className="analysis-stats">
+
+                          <div>
+
+                            <span>
+                              DISTANCE
+                            </span>
+
+                            <strong>
+                              {bestRoute.distanceKm !=
+                              null
+                                ? `${Number(
+                                    bestRoute.distanceKm
+                                  ).toFixed(
+                                    1
+                                  )} km`
+                                : "--"}
+                            </strong>
+
+                          </div>
+
+                          <div>
+
+                            <span>
+                              ETA
+                            </span>
+
+                            <strong>
+                              {formatDuration(
+                                bestRoute.durationMin
+                              )}
+                            </strong>
+
+                          </div>
+
+                          <div>
+
+                            <span>
+                              RISK
+                            </span>
+
+                            <strong>
+                              {getRiskLabel(
+                                bestRoute.hazardRisk
+                              )}
+                            </strong>
+
+                          </div>
+
+                        </div>
+
+                        <div className="analysis-hazard">
+
+                          <div className="hazard-icon">
+                            ◈
+                          </div>
+
+                          <div>
+
+                            <span>
+                              LIVE CONDITION
+                            </span>
+
+                            <strong>
+                              {getHazardMessage(
+                                bestRoute
+                              )}
+                            </strong>
+
+                          </div>
+
+                        </div>
+
+                        {/* ==========================================
+                            INTERNATIONAL BORDER WARNING
+                            ========================================== */}
+
+                        {bestRoute.international && (
+
+                          <div className="border-warning-card">
+
+                            <div className="border-warning-title">
+                              International border crossing detected
+                            </div>
+
+                            <div className="border-warning-text">
+                              {bestRoute.borderWarning ||
+                                "Permit, customs and other cross-border requirements may apply."}
+                            </div>
+
+                            {bestRoute.countriesCrossed?.length >
+                              0 && (
+
+                              <div className="border-countries">
+                                Countries:{" "}
+                                {bestRoute.countriesCrossed.join(
+                                  " → "
                                 )}
-                              >
-                                <div className="vehicle-icon">
-                                  ▰
-                                </div>
-
-                                <div className="vehicle-content">
-                                  <strong>
-                                    {
-                                      vehicle.registrationNumber
-                                    }
-                                  </strong>
-
-                                  <span>
-                                    {
-                                      vehicle.vehicleType
-                                    }
-                                  </span>
-
-                                  <div className="vehicle-details">
-                                    <span>
-                                      Capacity{" "}
-                                      <b>
-                                        {
-                                          vehicle.capacity
-                                        }
-                                      </b>
-                                    </span>
-
-                                    <span>
-                                      Fuel{" "}
-                                      <b>
-                                        {
-                                          vehicle.fuelType
-                                        }
-                                      </b>
-                                    </span>
-                                  </div>
-                                </div>
-
-                                <span
-                                  className={`vehicle-status ${
-                                    vehicle.status ===
-                                    "ACTIVE"
-                                      ? "active"
-                                      : ""
-                                  }`}
-                                >
-                                  {vehicle.status ||
-                                    "ACTIVE"}
-                                </span>
                               </div>
-                            )
+
+                            )}
+
+                          </div>
+
+                        )}
+
+                        {/* ==========================================
+                            HAZARD DATA WARNING
+                            ========================================== */}
+
+                        {bestRoute.hazardDataUnavailable && (
+
+                          <div className="hazard-warning-card">
+
+                            <strong>
+                              Live hazard data unavailable
+                            </strong>
+
+                            <span>
+                              This route was scored
+                              conservatively and must
+                              not be treated as
+                              verified safe.
+                            </span>
+
+                          </div>
+
+                        )}
+
+                        {routeVendorId &&
+                          routeVehicleId && (
+
+                            <button
+                              className="shipment-button large"
+                              onClick={() =>
+                                openShipmentFromRoute(
+                                  bestRoute
+                                )
+                              }
+                              type="button"
+                            >
+
+                              Create shipment from
+                              recommended route
+
+                              <span>
+                                →
+                              </span>
+
+                            </button>
+
                           )}
-                        </div>
-                      )}
-                    </div>
 
-                    {/* =================================================
-                        SHIPMENTS
-                        ================================================= */}
+                      </div>
 
-                    <div className="oms-section">
-                      <div className="card-header">
+                    )}
+
+                    {/* =============================================
+                        ALTERNATIVE ROUTES
+                        ============================================= */}
+
+                    <div className="alternatives-section">
+
+                      <div className="alternatives-heading">
+
                         <div>
-                          <span className="section-label">
-                            SHIPMENTS
+
+                          <span className="section-kicker">
+                            COMPARISON
                           </span>
 
                           <h3>
-                            Recent shipments
+                            Alternative routes
                           </h3>
+
                         </div>
 
-                        <button
-                          className="secondary-button"
-                          onClick={
-                            openShipmentForm
-                          }
-                        >
-                          + Shipment
-                        </button>
+                        <span className="result-count">
+                          {routes.length} OPTIONS
+                        </span>
+
                       </div>
 
-                      {shipmentLoading ? (
-                        <div className="loading-state">
-                          Loading shipments...
-                        </div>
-                      ) : shipments.length ===
-                        0 ? (
-                        <div className="empty-card">
-                          <strong>
-                            No shipments recorded
-                          </strong>
+                      <div className="alternatives-list">
 
-                          <span>
-                            Create a shipment and
-                            assign it to one of
-                            your active vehicles.
-                          </span>
-                        </div>
-                      ) : (
-                        <div className="shipment-table-wrapper">
-                          <table className="shipment-table">
-                            <thead>
-                              <tr>
-                                <th>
-                                  Shipment
-                                </th>
+                        {routes.map(
+                          (route, index) => {
 
-                                <th>
-                                  Route
-                                </th>
+                            const safety =
+                              getSafetyScore(
+                                route
+                              );
 
-                                <th>
-                                  Type
-                                </th>
+                            const isRecommended =
+                              isSameRoute(
+                                route,
+                                bestRoute
+                              );
 
-                                <th>
-                                  Load
-                                </th>
+                            const isSelected =
+                              isSameRoute(
+                                route,
+                                selectedRoute
+                              );
 
-                                <th>
-                                  Status
-                                </th>
-                              </tr>
-                            </thead>
+                            return (
 
-                            <tbody>
-                              {shipments.map(
-                                (shipment) => (
-                                  <tr
-                                    key={getEntityId(
-                                      shipment
-                                    )}
+                              <article
+                                key={getRouteKey(
+                                  route,
+                                  index
+                                )}
+                                className={`analysis-route-card ${
+                                  isSelected
+                                    ? "selected"
+                                    : ""
+                                }`}
+                                onClick={() =>
+                                  setSelectedRoute(
+                                    route
+                                  )
+                                }
+                              >
+
+                                <div className="analysis-card-number">
+
+                                  <span
+                                    style={{
+                                      borderColor:
+                                        routeColors[
+                                          index %
+                                            routeColors.length
+                                        ],
+                                    }}
                                   >
-                                    <td>
-                                      <strong>
-                                        {
-                                          shipment.id
-                                        }
-                                      </strong>
-                                    </td>
+                                    {index + 1}
+                                  </span>
 
-                                    <td>
-                                      <div className="shipment-route">
-                                        <span>
-                                          {
-                                            shipment.origin
-                                          }
-                                        </span>
+                                </div>
+
+                                <div className="analysis-card-main">
+
+                                  <div className="analysis-card-title">
+
+                                    <div>
+
+                                      <strong>
+                                        {isRecommended
+                                          ? "Recommended route"
+                                          : `Route alternative ${
+                                              index +
+                                              1
+                                            }`}
+                                      </strong>
+
+                                      <span>
+                                        {route.name ||
+                                          route.summary ||
+                                          `Route ${route.routeNumber ?? index + 1}`}
+                                      </span>
+
+                                    </div>
+
+                                    <div
+                                      className={`mini-safety ${getSafetyClass(
+                                        safety
+                                      )}`}
+                                    >
+                                      {Math.round(
+                                        safety
+                                      )}
+                                      %
+                                    </div>
+
+                                  </div>
+
+                                  <div className="mini-stats">
+
+                                    <span>
+                                      {route.distanceKm !=
+                                      null
+                                        ? `${Number(
+                                            route.distanceKm
+                                          ).toFixed(
+                                            1
+                                          )} km`
+                                        : "--"}
+                                    </span>
+
+                                    <span>
+                                      {formatDuration(
+                                        route.durationMin
+                                      )}
+                                    </span>
+
+                                    <span>
+                                      {getRiskLabel(
+                                        route.hazardRisk
+                                      )}
+                                    </span>
+
+                                  </div>
+
+                                  <div className="mini-hazard">
+                                    ◈{" "}
+                                    {getHazardMessage(
+                                      route
+                                    )}
+                                  </div>
+
+                                  {route.international && (
+
+                                    <div className="mini-border-warning">
+
+                                      <strong>
+                                        International border
+                                      </strong>
+
+                                      <span>
+                                        Permit/customs
+                                        requirements may apply
+                                      </span>
+
+                                    </div>
+
+                                  )}
+
+                                  {route.hazardDataUnavailable && (
+
+                                    <div className="mini-data-warning">
+                                      Live hazard data unavailable
+                                    </div>
+
+                                  )}
+
+                                  {routeVendorId &&
+                                    routeVehicleId && (
+
+                                      <button
+                                        className="shipment-button"
+                                        onClick={(
+                                          event
+                                        ) => {
+
+                                          event.stopPropagation();
+
+                                          openShipmentFromRoute(
+                                            route
+                                          );
+                                        }}
+                                        type="button"
+                                      >
+
+                                        Create shipment
 
                                         <span>
                                           →
                                         </span>
 
-                                        <span>
-                                          {
-                                            shipment.destination
-                                          }
-                                        </span>
-                                      </div>
-                                    </td>
+                                      </button>
 
-                                    <td>
-                                      {
-                                        shipment.shipmentType
-                                      }
-                                    </td>
+                                    )}
 
-                                    <td>
-                                      {
-                                        shipment.load
-                                      }
-                                    </td>
+                                </div>
 
-                                    <td>
-                                      <span className="table-status">
-                                        {shipment.status ||
-                                          "CREATED"}
-                                      </span>
-                                    </td>
-                                  </tr>
-                                )
-                              )}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
+                              </article>
+
+                            );
+                          }
+                        )}
+
+                      </div>
+
                     </div>
-                  </>
-                ) : (
-                  <div className="vendor-empty-main">
+
+                  </div>
+
+                )}
+
+              </section>
+
+              {/* ==================================================
+                  MAP
+                  ================================================== */}
+
+              <section className="map-panel glass">
+
+                <div className="map-topbar">
+
+                  <div className="map-analysis">
+
+                    <span className="section-kicker">
+                      LIVE ROUTE MAP
+                    </span>
+
+                    <strong>
+                      Active route overview
+                    </strong>
+
+                  </div>
+
+                  <div className="map-live">
+
+                    <span />
+
+                    LIVE
+
+                  </div>
+
+                </div>
+
+                <div className="map-container">
+
+                  <MapContainer
+                    center={mapCenter}
+                    zoom={6}
+                    scrollWheelZoom
+                    zoomControl
+                    style={{
+                      height: "100%",
+                      width: "100%",
+                    }}
+                  >
+
+                    <TileLayer
+                      attribution='&copy; <a href="https://www.openstreetmap.org/">OpenStreetMap</a>'
+                      url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    />
+
+                    <FitRoutes
+                      routes={routes}
+                    />
+
+                    {routePolylines.map(
+                      ({
+                        route,
+                        positions,
+                        color,
+                      }, index) => {
+
+                        const isSelected =
+                          isSameRoute(
+                            route,
+                            selectedRouteData
+                          );
+
+                        const isRecommended =
+                          isSameRoute(
+                            route,
+                            bestRoute
+                          );
+
+                        return (
+
+                          <Polyline
+                            key={getRouteKey(
+                              route,
+                              index
+                            )}
+                            positions={
+                              positions
+                            }
+                            pathOptions={{
+                              color,
+                              weight:
+                                isSelected
+                                  ? 6
+                                  : isRecommended
+                                  ? 5
+                                  : 3,
+                              opacity:
+                                isSelected
+                                  ? 0.95
+                                  : isRecommended
+                                  ? 0.75
+                                  : 0.4,
+                            }}
+                            eventHandlers={{
+                              click: () =>
+                                setSelectedRoute(
+                                  route
+                                ),
+                            }}
+                          />
+
+                        );
+                      }
+                    )}
+
+                    {selectedPositions.length >
+                      0 && (
+
+                      <>
+
+                        <Marker
+                          position={[
+                            Number(
+                              selectedPositions[
+                                0
+                              ][1]
+                            ),
+                            Number(
+                              selectedPositions[
+                                0
+                              ][0]
+                            ),
+                          ]}
+                          icon={markerIcon}
+                        >
+
+                          <Popup>
+                            <strong>
+                              Origin
+                            </strong>
+                            <br />
+                            {source}
+                          </Popup>
+
+                        </Marker>
+
+                        <Marker
+                          position={[
+                            Number(
+                              selectedPositions[
+                                selectedPositions.length -
+                                  1
+                              ][1]
+                            ),
+                            Number(
+                              selectedPositions[
+                                selectedPositions.length -
+                                  1
+                              ][0]
+                            ),
+                          ]}
+                          icon={markerIcon}
+                        >
+
+                          <Popup>
+                            <strong>
+                              Destination
+                            </strong>
+                            <br />
+                            {destination}
+                          </Popup>
+
+                        </Marker>
+
+                      </>
+
+                    )}
+
+                  </MapContainer>
+
+                  {!routes.length && (
+
+                    <div className="map-empty glass-small">
+
+                      <div className="map-empty-icon">
+                        ⌖
+                      </div>
+
+                      <strong>
+                        Your route will appear here
+                      </strong>
+
+                      <span>
+                        Enter locations and run
+                        the route intelligence
+                        engine.
+                      </span>
+
+                    </div>
+
+                  )}
+
+                  {selectedRouteData && (
+
+                    <div className="map-route-card glass-small">
+
+                      <div>
+
+                        <span className="section-kicker">
+                          SELECTED ROUTE
+                        </span>
+
+                        <strong>
+                          {isSameRoute(
+                            selectedRouteData,
+                            bestRoute
+                          )
+                            ? "Recommended route"
+                            : "Route alternative"}
+                        </strong>
+
+                      </div>
+
+                      <div
+                        className={`map-safety ${getSafetyClass(
+                          selectedRouteScore
+                        )}`}
+                      >
+
+                        {Math.round(
+                          selectedRouteScore
+                        )}
+                        %
+
+                      </div>
+
+                    </div>
+
+                  )}
+
+                </div>
+
+              </section>
+
+            </div>
+
+          </section>
+        )}
+
+        {/* ========================================================
+            VENDOR OMS
+            ======================================================== */}
+
+        {activeSection === "vendor" && (
+
+          <section className="vendor-page">
+
+            <div className="vendor-toolbar glass">
+
+              <div>
+
+                <span className="section-kicker">
+                  VENDOR OMS
+                </span>
+
+                <h2>
+                  Fleet & shipment management
+                </h2>
+
+                <p>
+                  Manage your logistics
+                  partners, vehicles and
+                  shipments.
+                </p>
+
+              </div>
+
+              <button
+                className="primary-button compact"
+                onClick={() =>
+                  setShowVendorForm(true)
+                }
+                type="button"
+              >
+                + Add vendor
+              </button>
+
+            </div>
+
+            {vendorError && (
+
+              <div className="route-error">
+
+                <span>!</span>
+
+                {vendorError}
+
+              </div>
+
+            )}
+
+            <div className="vendor-layout">
+
+              {/* VENDOR LIST */}
+
+              <section className="vendor-list-panel glass">
+
+                <div className="section-header">
+
+                  <div>
+
+                    <span className="section-kicker">
+                      PARTNERS
+                    </span>
+
+                    <h3>
+                      Vendors
+                    </h3>
+
+                  </div>
+
+                  <span className="result-count">
+                    {vendors.length}
+                  </span>
+
+                </div>
+
+                <div className="vendor-list">
+
+                  {vendorLoading && (
+
+                    <div className="inline-loading">
+                      Loading vendors...
+                    </div>
+
+                  )}
+
+                  {!vendorLoading &&
+                    !vendors.length && (
+
+                      <div className="empty-small">
+
+                        <strong>
+                          No vendors yet
+                        </strong>
+
+                        <span>
+                          Add your first
+                          logistics partner.
+                        </span>
+
+                      </div>
+
+                    )}
+
+                  {vendors.map(
+                    (vendor) => {
+
+                      const id =
+                        getEntityId(
+                          vendor
+                        );
+
+                      return (
+
+                        <button
+                          key={id}
+                          className={`vendor-list-item ${
+                            String(
+                              selectedVendorId
+                            ) ===
+                            String(id)
+                              ? "active"
+                              : ""
+                          }`}
+                          onClick={() =>
+                            setSelectedVendorId(
+                              String(id)
+                            )
+                          }
+                          type="button"
+                        >
+
+                          <div className="vendor-avatar">
+
+                            {(
+                              vendor.name ||
+                              "V"
+                            )
+                              .charAt(0)
+                              .toUpperCase()}
+
+                          </div>
+
+                          <div>
+
+                            <strong>
+                              {vendor.name ||
+                                "Unnamed vendor"}
+                            </strong>
+
+                            <span>
+                              {vendor.email ||
+                                "No email"}
+                            </span>
+
+                          </div>
+
+                          <span className="vendor-arrow">
+                            →
+                          </span>
+
+                        </button>
+
+                      );
+                    }
+                  )}
+
+                </div>
+
+              </section>
+
+              {/* VENDOR PROFILE */}
+
+              <section className="vendor-profile glass">
+
+                {!selectedVendor ? (
+
+                  <div className="empty-profile">
+
                     <div className="empty-icon">
                       ▣
                     </div>
 
-                    <h2>
+                    <h3>
                       Select a vendor
-                    </h2>
+                    </h3>
 
                     <p>
-                      Select a vendor from the
-                      left to manage its fleet
-                      and shipments.
+                      Choose a vendor to view
+                      fleet and shipment data.
                     </p>
+
                   </div>
+
+                ) : (
+
+                  <>
+
+                    <div className="profile-header">
+
+                      <div className="profile-identity">
+
+                        <div className="profile-avatar">
+
+                          {(
+                            selectedVendor.name ||
+                            "V"
+                          )
+                            .charAt(0)
+                            .toUpperCase()}
+
+                        </div>
+
+                        <div>
+
+                          <span className="section-kicker">
+                            ACTIVE VENDOR
+                          </span>
+
+                          <h2>
+                            {
+                              selectedVendor.name
+                            }
+                          </h2>
+
+                          <p>
+                            {selectedVendor.email ||
+                              "No email available"}
+                          </p>
+
+                        </div>
+
+                      </div>
+
+                      <div className="green-score">
+
+                        <span>
+                          GREEN SCORE
+                        </span>
+
+                        <strong>
+                          {selectedVendor.greenScore ??
+                            selectedVendor.green_score ??
+                            "--"}
+                        </strong>
+
+                      </div>
+
+                    </div>
+
+                    <div className="oms-grid">
+
+                      {/* FLEET */}
+
+                      <section className="oms-section">
+
+                        <div className="section-header">
+
+                          <div>
+
+                            <span className="section-kicker">
+                              FLEET
+                            </span>
+
+                            <h3>
+                              Vehicles
+                            </h3>
+
+                          </div>
+
+                          <button
+                            className="secondary-button"
+                            onClick={() =>
+                              setShowVehicleForm(
+                                true
+                              )
+                            }
+                            type="button"
+                          >
+                            + Vehicle
+                          </button>
+
+                        </div>
+
+                        {vehicleLoading ? (
+
+                          <div className="inline-loading">
+                            Loading fleet...
+                          </div>
+
+                        ) : !vehicles.length ? (
+
+                          <div className="empty-small">
+
+                            <strong>
+                              No vehicles
+                            </strong>
+
+                            <span>
+                              Add a vehicle to
+                              this vendor.
+                            </span>
+
+                          </div>
+
+                        ) : (
+
+                          <div className="vehicle-list">
+
+                            {vehicles.map(
+                              (vehicle) => (
+
+                                <div
+                                  className="vehicle-card"
+                                  key={getEntityId(
+                                    vehicle
+                                  )}
+                                >
+
+                                  <div className="vehicle-icon">
+                                    ▰
+                                  </div>
+
+                                  <div>
+
+                                    <strong>
+                                      {vehicle.registrationNumber ||
+                                        vehicle.vehicleNumber ||
+                                        "Vehicle"}
+                                    </strong>
+
+                                    <span>
+                                      {vehicle.vehicleType ||
+                                        "Truck"}{" "}
+                                      ·{" "}
+                                      {vehicle.fuelType ||
+                                        "Unknown fuel"}
+                                    </span>
+
+                                  </div>
+
+                                  <div className="vehicle-capacity">
+
+                                    <span>
+                                      Capacity
+                                    </span>
+
+                                    <strong>
+                                      {vehicle.capacity ||
+                                        "--"}
+                                    </strong>
+
+                                  </div>
+
+                                </div>
+
+                              )
+                            )}
+
+                          </div>
+
+                        )}
+
+                      </section>
+
+                      {/* SHIPMENTS */}
+
+                      <section className="oms-section">
+
+                        <div className="section-header">
+
+                          <div>
+
+                            <span className="section-kicker">
+                              ORDERS
+                            </span>
+
+                            <h3>
+                              Shipments
+                            </h3>
+
+                          </div>
+
+                          <button
+                            className="secondary-button"
+                            onClick={() =>
+                              setShowShipmentForm(
+                                true
+                              )
+                            }
+                            type="button"
+                          >
+                            + Shipment
+                          </button>
+
+                        </div>
+
+                        {shipmentLoading ? (
+
+                          <div className="inline-loading">
+                            Loading shipments...
+                          </div>
+
+                        ) : !shipments.length ? (
+
+                          <div className="empty-small">
+
+                            <strong>
+                              No shipments
+                            </strong>
+
+                            <span>
+                              Create your first
+                              shipment.
+                            </span>
+
+                          </div>
+
+                        ) : (
+
+                          <div className="shipment-list">
+
+                            {shipments.map(
+                              (
+                                shipment,
+                                index
+                              ) => (
+
+                                <div
+                                  className="shipment-card"
+                                  key={
+                                    getEntityId(
+                                      shipment
+                                    ) ||
+                                    index
+                                  }
+                                >
+
+                                  <div className="shipment-status">
+
+                                    <span />
+
+                                    Active
+
+                                  </div>
+
+                                  <div className="shipment-route">
+
+                                    <strong>
+                                      {shipment.origin ||
+                                        shipment.source ||
+                                        "—"}
+                                    </strong>
+
+                                    <span>
+                                      ↓
+                                    </span>
+
+                                    <strong>
+                                      {shipment.destination ||
+                                        shipment.destinationName ||
+                                        "—"}
+                                    </strong>
+
+                                  </div>
+
+                                  <div className="shipment-meta">
+
+                                    {shipment.shipmentType ||
+                                      "General"}
+
+                                    {shipment.load
+                                      ? ` · ${shipment.load}`
+                                      : ""}
+
+                                  </div>
+
+                                </div>
+
+                              )
+                            )}
+
+                          </div>
+
+                        )}
+
+                      </section>
+
+                    </div>
+
+                  </>
+
                 )}
-              </div>
+
+              </section>
+
             </div>
+
           </section>
+
         )}
+
       </main>
 
-      {/* ==========================================================
-          CREATE VENDOR MODAL
-          ========================================================== */}
+      {/* ========================================================
+          VENDOR MODAL
+          ======================================================== */}
 
       {showVendorForm && (
+
         <div
           className="modal-backdrop"
           onClick={() =>
             setShowVendorForm(false)
           }
         >
-          <div
-            className="modal"
-            onClick={(event) =>
-              event.stopPropagation()
+
+          <form
+            className="modal glass"
+            onSubmit={
+              handleCreateVendor
+            }
+            onClick={(e) =>
+              e.stopPropagation()
             }
           >
+
             <div className="modal-header">
+
               <div>
-                <span className="section-label">
+
+                <span className="section-kicker">
                   VENDOR OMS
                 </span>
 
                 <h2>
-                  Create vendor
+                  Add vendor
                 </h2>
+
               </div>
 
               <button
+                type="button"
                 className="close-button"
                 onClick={() =>
                   setShowVendorForm(false)
@@ -2213,124 +2794,109 @@ function App() {
               >
                 ×
               </button>
+
             </div>
 
-            <form
-              className="modal-form"
-              onSubmit={handleCreateVendor}
-            >
+            <div className="modal-fields">
+
               <div className="form-field">
+
                 <label>
-                  Business name
+                  Vendor name
                 </label>
 
                 <input
-                  required
-                  value={vendorForm.name}
-                  onChange={(event) =>
+                  value={
+                    vendorForm.name
+                  }
+                  onChange={(e) =>
                     setVendorForm({
                       ...vendorForm,
-                      name: event.target.value,
+                      name: e.target.value,
                     })
                   }
-                  placeholder="North East Logistics"
+                  placeholder="e.g. Northeast Logistics"
+                  required
                 />
+
               </div>
 
               <div className="form-field">
-                <label>Email</label>
+
+                <label>
+                  Email
+                </label>
 
                 <input
-                  required
                   type="email"
-                  value={vendorForm.email}
-                  onChange={(event) =>
+                  value={
+                    vendorForm.email
+                  }
+                  onChange={(e) =>
                     setVendorForm({
                       ...vendorForm,
-                      email:
-                        event.target.value,
+                      email: e.target.value,
                     })
                   }
                   placeholder="vendor@example.com"
                 />
+
               </div>
 
-              <div className="form-field">
-                <label>Phone</label>
+            </div>
 
-                <input
-                  value={vendorForm.phone}
-                  onChange={(event) =>
-                    setVendorForm({
-                      ...vendorForm,
-                      phone:
-                        event.target.value,
-                    })
-                  }
-                  placeholder="+91..."
-                />
-              </div>
+            <button
+              className="primary-button"
+              type="submit"
+            >
+              Create vendor
+            </button>
 
-              <div className="form-field">
-                <label>Address</label>
+          </form>
 
-                <textarea
-                  value={vendorForm.address}
-                  onChange={(event) =>
-                    setVendorForm({
-                      ...vendorForm,
-                      address:
-                        event.target.value,
-                    })
-                  }
-                  placeholder="Business address"
-                  rows="3"
-                />
-              </div>
-
-              <button
-                className="primary-button"
-                type="submit"
-                disabled={vendorLoading}
-              >
-                {vendorLoading
-                  ? "Creating..."
-                  : "Create vendor"}
-              </button>
-            </form>
-          </div>
         </div>
+
       )}
 
-      {/* ==========================================================
-          CREATE VEHICLE MODAL
-          ========================================================== */}
+      {/* ========================================================
+          VEHICLE MODAL
+          ======================================================== */}
 
       {showVehicleForm && (
+
         <div
           className="modal-backdrop"
           onClick={() =>
             setShowVehicleForm(false)
           }
         >
-          <div
-            className="modal"
-            onClick={(event) =>
-              event.stopPropagation()
+
+          <form
+            className="modal glass"
+            onSubmit={
+              handleAddVehicle
+            }
+            onClick={(e) =>
+              e.stopPropagation()
             }
           >
+
             <div className="modal-header">
+
               <div>
-                <span className="section-label">
-                  FLEET OMS
+
+                <span className="section-kicker">
+                  FLEET
                 </span>
 
                 <h2>
                   Add vehicle
                 </h2>
+
               </div>
 
               <button
+                type="button"
                 className="close-button"
                 onClick={() =>
                   setShowVehicleForm(false)
@@ -2338,94 +2904,38 @@ function App() {
               >
                 ×
               </button>
+
             </div>
 
-            <form
-              className="modal-form"
-              onSubmit={handleCreateVehicle}
-            >
-              {/* VENDOR SELECTOR */}
+            <div className="modal-fields">
 
               <div className="form-field">
-                <label>
-                  Vendor
-                </label>
 
-                <select
-                  required
-                  value={selectedVendorId}
-                  onChange={(event) =>
-                    handleVendorChange(
-                      event.target.value
-                    )
-                  }
-                >
-                  <option value="">
-                    Select vendor
-                  </option>
-
-                  {vendors.map((vendor) => (
-                    <option
-                      key={getEntityId(
-                        vendor
-                      )}
-                      value={getEntityId(
-                        vendor
-                      )}
-                    >
-                      {vendor.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {selectedVendor && (
-                <div className="selected-vendor-mini">
-                  <div className="mini-avatar">
-                    {selectedVendor.name
-                      ?.charAt(0)
-                      ?.toUpperCase()}
-                  </div>
-
-                  <div>
-                    <span>
-                      Adding vehicle to
-                    </span>
-
-                    <strong>
-                      {selectedVendor.name}
-                    </strong>
-                  </div>
-                </div>
-              )}
-
-              {/* REGISTRATION */}
-
-              <div className="form-field">
                 <label>
                   Registration number
                 </label>
 
                 <input
-                  required
                   value={
                     vehicleForm.registrationNumber
                   }
-                  onChange={(event) =>
+                  onChange={(e) =>
                     setVehicleForm({
                       ...vehicleForm,
                       registrationNumber:
-                        event.target.value.toUpperCase(),
+                        e.target.value,
                     })
                   }
-                  placeholder="MH 04 AB 1234"
+                  placeholder="MH 01 AB 1234"
+                  required
                 />
+
               </div>
 
-              {/* TYPE + FUEL */}
+              <div className="form-grid">
 
-              <div className="form-row">
                 <div className="form-field">
+
                   <label>
                     Vehicle type
                   </label>
@@ -2434,33 +2944,41 @@ function App() {
                     value={
                       vehicleForm.vehicleType
                     }
-                    onChange={(event) =>
+                    onChange={(e) =>
                       setVehicleForm({
                         ...vehicleForm,
                         vehicleType:
-                          event.target.value,
+                          e.target.value,
                       })
                     }
                   >
-                    <option value="TRUCK">
+
+                    <option>
                       Truck
                     </option>
 
-                    <option value="MINI_TRUCK">
+                    <option>
                       Mini Truck
                     </option>
 
-                    <option value="VAN">
+                    <option>
                       Van
                     </option>
 
-                    <option value="PICKUP">
+                    <option>
                       Pickup
                     </option>
+
+                    <option>
+                      EV Truck
+                    </option>
+
                   </select>
+
                 </div>
 
                 <div className="form-field">
+
                   <label>
                     Fuel type
                   </label>
@@ -2469,106 +2987,113 @@ function App() {
                     value={
                       vehicleForm.fuelType
                     }
-                    onChange={(event) =>
+                    onChange={(e) =>
                       setVehicleForm({
                         ...vehicleForm,
                         fuelType:
-                          event.target.value,
+                          e.target.value,
                       })
                     }
                   >
-                    <option value="DIESEL">
+
+                    <option>
                       Diesel
                     </option>
 
-                    <option value="PETROL">
+                    <option>
                       Petrol
                     </option>
 
-                    <option value="CNG">
+                    <option>
                       CNG
                     </option>
 
-                    <option value="EV">
+                    <option>
                       Electric
                     </option>
 
-                    <option value="HYBRID">
-                      Hybrid
-                    </option>
                   </select>
+
                 </div>
+
               </div>
 
-              {/* CAPACITY */}
-
               <div className="form-field">
+
                 <label>
                   Capacity
                 </label>
 
                 <input
-                  required
-                  type="number"
-                  min="0"
-                  value={vehicleForm.capacity}
-                  onChange={(event) =>
+                  value={
+                    vehicleForm.capacity
+                  }
+                  onChange={(e) =>
                     setVehicleForm({
                       ...vehicleForm,
                       capacity:
-                        event.target.value,
+                        e.target.value,
                     })
                   }
-                  placeholder="Capacity"
+                  placeholder="e.g. 5 tonnes"
                 />
+
               </div>
 
-              <button
-                className="primary-button"
-                type="submit"
-                disabled={
-                  vehicleLoading ||
-                  !selectedVendorId
-                }
-              >
-                {vehicleLoading
-                  ? "Adding..."
-                  : "Add vehicle"}
-              </button>
-            </form>
-          </div>
+            </div>
+
+            <button
+              className="primary-button"
+              type="submit"
+            >
+              Add vehicle
+            </button>
+
+          </form>
+
         </div>
+
       )}
 
-      {/* ==========================================================
-          CREATE SHIPMENT MODAL
-          ========================================================== */}
+      {/* ========================================================
+          SHIPMENT MODAL
+          ======================================================== */}
 
       {showShipmentForm && (
+
         <div
           className="modal-backdrop"
           onClick={() =>
             setShowShipmentForm(false)
           }
         >
-          <div
-            className="modal"
-            onClick={(event) =>
-              event.stopPropagation()
+
+          <form
+            className="modal glass"
+            onSubmit={
+              handleCreateShipment
+            }
+            onClick={(e) =>
+              e.stopPropagation()
             }
           >
+
             <div className="modal-header">
+
               <div>
-                <span className="section-label">
-                  SHIPMENT OMS
+
+                <span className="section-kicker">
+                  SHIPMENT
                 </span>
 
                 <h2>
                   Create shipment
                 </h2>
+
               </div>
 
               <button
+                type="button"
                 className="close-button"
                 onClick={() =>
                   setShowShipmentForm(false)
@@ -2576,157 +3101,110 @@ function App() {
               >
                 ×
               </button>
+
             </div>
 
-            <form
-              className="modal-form"
-              onSubmit={handleCreateShipment}
-            >
-              {/* VENDOR */}
+            <div className="modal-fields">
 
               <div className="form-field">
-                <label>
-                  Vendor
-                </label>
 
-                <select
-                  required
-                  value={selectedVendorId}
-                  onChange={(event) =>
-                    handleVendorChange(
-                      event.target.value
-                    )
-                  }
-                >
-                  <option value="">
-                    Select vendor
-                  </option>
-
-                  {vendors.map((vendor) => (
-                    <option
-                      key={getEntityId(
-                        vendor
-                      )}
-                      value={getEntityId(
-                        vendor
-                      )}
-                    >
-                      {vendor.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* VEHICLE */}
-
-              <div className="form-field">
                 <label>
                   Vehicle
                 </label>
 
                 <select
-                  required
                   value={
                     shipmentForm.vehicleId
                   }
-                  onChange={(event) =>
+                  onChange={(e) =>
                     setShipmentForm({
                       ...shipmentForm,
                       vehicleId:
-                        event.target.value,
+                        e.target.value,
                     })
                   }
-                  disabled={
-                    !selectedVendorId ||
-                    vehicles.length === 0
-                  }
+                  required
                 >
+
                   <option value="">
-                    {!selectedVendorId
-                      ? "Select vendor first"
-                      : vehicles.length === 0
-                      ? "No vehicles available"
-                      : "Select vehicle"}
+                    Select vehicle
                   </option>
 
-                  {vehicles
-                    .filter(
-                      (vehicle) =>
-                        vehicle.status ===
-                          "ACTIVE" ||
-                        !vehicle.status
-                    )
-                    .map((vehicle) => (
-                      <option
-                        key={getEntityId(
+                  {vehicles.map(
+                    (vehicle) => {
+
+                      const id =
+                        getEntityId(
                           vehicle
-                        )}
-                        value={getEntityId(
-                          vehicle
-                        )}
-                      >
-                        {
-                          vehicle.registrationNumber
-                        }{" "}
-                        —{" "}
-                        {
-                          vehicle.vehicleType
-                        }
-                      </option>
-                    ))}
+                        );
+
+                      return (
+                        <option
+                          key={id}
+                          value={id}
+                        >
+                          {vehicle.registrationNumber ||
+                            vehicle.vehicleNumber ||
+                            "Vehicle"}
+                        </option>
+                      );
+                    }
+                  )}
+
                 </select>
+
               </div>
 
-              {/* ORIGIN + DESTINATION */}
+              <div className="form-field">
 
-              <div className="form-row">
-                <div className="form-field">
-                  <label>
-                    Origin
-                  </label>
+                <label>
+                  Origin
+                </label>
 
-                  <input
-                    required
-                    value={
-                      shipmentForm.origin
-                    }
-                    onChange={(event) =>
-                      setShipmentForm({
-                        ...shipmentForm,
-                        origin:
-                          event.target.value,
-                      })
-                    }
-                    placeholder="Origin"
-                  />
-                </div>
+                <input
+                  value={
+                    shipmentForm.origin
+                  }
+                  onChange={(e) =>
+                    setShipmentForm({
+                      ...shipmentForm,
+                      origin:
+                        e.target.value,
+                    })
+                  }
+                  placeholder="Origin"
+                  required
+                />
 
-                <div className="form-field">
-                  <label>
-                    Destination
-                  </label>
-
-                  <input
-                    required
-                    value={
-                      shipmentForm.destination
-                    }
-                    onChange={(event) =>
-                      setShipmentForm({
-                        ...shipmentForm,
-                        destination:
-                          event.target.value,
-                      })
-                    }
-                    placeholder="Destination"
-                  />
-                </div>
               </div>
 
-              {/* TYPE + LOAD */}
+              <div className="form-field">
 
-              <div className="form-row">
+                <label>
+                  Destination
+                </label>
+
+                <input
+                  value={
+                    shipmentForm.destination
+                  }
+                  onChange={(e) =>
+                    setShipmentForm({
+                      ...shipmentForm,
+                      destination:
+                        e.target.value,
+                    })
+                  }
+                  placeholder="Destination"
+                  required
+                />
+
+              </div>
+
+              <div className="form-grid">
+
                 <div className="form-field">
+
                   <label>
                     Shipment type
                   </label>
@@ -2735,77 +3213,78 @@ function App() {
                     value={
                       shipmentForm.shipmentType
                     }
-                    onChange={(event) =>
+                    onChange={(e) =>
                       setShipmentForm({
                         ...shipmentForm,
                         shipmentType:
-                          event.target.value,
+                          e.target.value,
                       })
                     }
                   >
-                    <option value="GENERAL">
+
+                    <option>
                       General
                     </option>
 
-                    <option value="MEDICINES">
-                      Medicines
-                    </option>
-
-                    <option value="PERISHABLE">
+                    <option>
                       Perishable
                     </option>
 
-                    <option value="HEAVY">
-                      Heavy goods
+                    <option>
+                      Medicine
                     </option>
 
-                    <option value="FRAGILE">
+                    <option>
+                      Heavy Goods
+                    </option>
+
+                    <option>
                       Fragile
                     </option>
+
                   </select>
+
                 </div>
 
                 <div className="form-field">
+
                   <label>
                     Load
                   </label>
 
                   <input
-                    required
-                    type="number"
-                    min="0"
                     value={
                       shipmentForm.load
                     }
-                    onChange={(event) =>
+                    onChange={(e) =>
                       setShipmentForm({
                         ...shipmentForm,
                         load:
-                          event.target.value,
+                          e.target.value,
                       })
                     }
-                    placeholder="Load"
+                    placeholder="e.g. 2 tonnes"
                   />
+
                 </div>
+
               </div>
 
-              <button
-                className="primary-button"
-                type="submit"
-                disabled={
-                  shipmentLoading ||
-                  !selectedVendorId ||
-                  !shipmentForm.vehicleId
-                }
-              >
-                {shipmentLoading
-                  ? "Creating..."
-                  : "Create shipment"}
-              </button>
-            </form>
-          </div>
+            </div>
+
+            <button
+              className="primary-button"
+              type="submit"
+            >
+              Create shipment
+            </button>
+
+          </form>
+
         </div>
+
       )}
+
     </div>
   );
 }
