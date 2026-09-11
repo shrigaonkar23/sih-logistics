@@ -1452,7 +1452,7 @@ function App() {
           </div>
 
           <div className="sidebar-version">
-            SILP • v0.4
+            SILP • v0.5
           </div>
 
         </div>
