@@ -1,15 +1,31 @@
+// ============================================================
+// SILP - BORDER / INTERNATIONAL ROUTE SERVICE
+// ============================================================
+//
+// Purpose:
+// - Detect whether a route crosses an international border.
+// - Determine the ordered countries encountered by the route.
+// - Preserve sequences such as:
+//      IND -> BTN -> IND
+// - Use the full OSRM route geometry.
+// - Sample the route approximately every 5 km for performance.
+// - Support LEG-BY-LEG validation for constrained routing.
+//
+// IMPORTANT:
+// which-polygon returns the country's PROPERTIES OBJECT directly,
+// not a GeoJSON Feature. Country code is primarily stored in A3.
+//
+// ============================================================
+
 const countryBoundaries =
     require("@geo-maps/countries-land-10m")();
 
 const whichPolygon =
     require("which-polygon");
 
-// ============================================================
-// COUNTRY INDEX
-// ============================================================
-
 const countryIndex =
     whichPolygon(countryBoundaries);
+
 
 // ============================================================
 // COUNTRY PROPERTY HELPERS
@@ -24,12 +40,14 @@ function getCountryName(properties = {}) {
         properties.NAME_EN ||
         properties.name_en ||
         properties.SOVEREIGNT ||
-        "Unknown"
+        null
     );
 }
 
+
 function getCountryCode(properties = {}) {
     return (
+        properties.A3 ||
         properties.ISO_A3 ||
         properties.ADM0_A3 ||
         properties.iso_a3 ||
@@ -38,11 +56,13 @@ function getCountryCode(properties = {}) {
     );
 }
 
+
 // ============================================================
-// FIND COUNTRY AT COORDINATE
+// COUNTRY LOOKUP
 // ============================================================
 
 function getCountryAtCoordinate(coordinate) {
+
     if (
         !Array.isArray(coordinate) ||
         coordinate.length < 2
@@ -60,48 +80,92 @@ function getCountryAtCoordinate(coordinate) {
         return null;
     }
 
-    const result =
-        countryIndex([lng, lat]);
+    try {
 
-    if (!result) {
+        // which-polygon expects [longitude, latitude]
+        const result =
+            countryIndex([lng, lat]);
+
+        if (!result) {
+            return null;
+        }
+
+        // which-polygon normally returns
+        // the properties object directly.
+        //
+        // Support Feature format too.
+        const properties =
+            result.properties || result;
+
+        const code =
+            getCountryCode(properties);
+
+        const name =
+            getCountryName(properties);
+
+        if (!code && !name) {
+            return null;
+        }
+
+        return {
+            name: name || code || "Unknown",
+
+            code: code
+                ? String(code).toUpperCase()
+                : null
+        };
+
+    } catch (error) {
+
         return null;
     }
-
-    const properties =
-        result.properties || result;
-
-    return {
-        name: getCountryName(properties),
-        code: getCountryCode(properties)
-    };
 }
 
+
 // ============================================================
-// HAVERSINE DISTANCE
+// DISTANCE
 // ============================================================
 
 function distanceKm(pointA, pointB) {
-    const [lng1, lat1] = pointA;
-    const [lng2, lat2] = pointB;
 
-    const R = 6371;
+    if (
+        !Array.isArray(pointA) ||
+        !Array.isArray(pointB)
+    ) {
+        return 0;
+    }
+
+    const lng1 = Number(pointA[0]);
+    const lat1 = Number(pointA[1]);
+
+    const lng2 = Number(pointB[0]);
+    const lat2 = Number(pointB[1]);
+
+    if (
+        !Number.isFinite(lng1) ||
+        !Number.isFinite(lat1) ||
+        !Number.isFinite(lng2) ||
+        !Number.isFinite(lat2)
+    ) {
+        return 0;
+    }
+
+    const earthRadiusKm = 6371;
 
     const dLat =
-        ((lat2 - lat1) * Math.PI) / 180;
+        (lat2 - lat1) *
+        Math.PI /
+        180;
 
     const dLng =
-        ((lng2 - lng1) * Math.PI) / 180;
-
-    const lat1Rad =
-        (lat1 * Math.PI) / 180;
-
-    const lat2Rad =
-        (lat2 * Math.PI) / 180;
+        (lng2 - lng1) *
+        Math.PI /
+        180;
 
     const a =
         Math.sin(dLat / 2) ** 2 +
-        Math.cos(lat1Rad) *
-        Math.cos(lat2Rad) *
+        Math.cos(lat1 * Math.PI / 180) *
+        Math.cos(lat2 * Math.PI / 180) *
         Math.sin(dLng / 2) ** 2;
 
     const c =
@@ -111,23 +175,32 @@ function distanceKm(pointA, pointB) {
             Math.sqrt(1 - a)
         );
 
-    return R * c;
+    return earthRadiusKm * c;
 }
 
+
 // ============================================================
-// ROUTE SAMPLING
+// TRUE GLOBAL ROUTE SAMPLING
+// ============================================================
 //
-// We sample the ACTUAL OSRM polyline rather than checking
-// arbitrary points around the route.
+// Samples the complete route approximately every spacingKm.
 //
-// 1 km spacing gives better border detection than 2 km,
-// especially around short international crossings.
+// Example:
+//
+// 0 km
+// 5 km
+// 10 km
+// 15 km
+// ...
+// final point
+//
 // ============================================================
 
 function sampleRouteCoordinates(
     coordinates,
-    spacingKm = 1
+    spacingKm = 5
 ) {
+
     if (
         !Array.isArray(coordinates) ||
         coordinates.length === 0
@@ -136,74 +209,134 @@ function sampleRouteCoordinates(
     }
 
     if (coordinates.length === 1) {
-        return [
-            coordinates[0]
-        ];
+        return [coordinates[0]];
     }
 
-    const samples = [
-        coordinates[0]
-    ];
+    if (
+        !Number.isFinite(spacingKm) ||
+        spacingKm <= 0
+    ) {
+        spacingKm = 5;
+    }
+
+    const samples = [];
+
+    // Always include route start.
+    samples.push(coordinates[0]);
+
+    let cumulativeDistance = 0;
+
+    let nextSampleDistance =
+        spacingKm;
+
+    let previousPoint =
+        coordinates[0];
 
     for (
-        let i = 0;
-        i < coordinates.length - 1;
+        let i = 1;
+        i < coordinates.length;
         i++
     ) {
-        const start =
-            coordinates[i];
 
-        const end =
-            coordinates[i + 1];
+        const currentPoint =
+            coordinates[i];
 
         const segmentDistance =
             distanceKm(
-                start,
-                end
+                previousPoint,
+                currentPoint
             );
 
-        const steps =
-            Math.max(
-                1,
-                Math.ceil(
-                    segmentDistance /
-                    spacingKm
-                )
-            );
+        if (segmentDistance <= 0) {
 
-        for (
-            let step = 1;
-            step <= steps;
-            step++
-        ) {
-            const ratio =
-                step / steps;
+            previousPoint =
+                currentPoint;
 
-            const lng =
-                start[0] +
-                (end[0] - start[0]) *
-                ratio;
-
-            const lat =
-                start[1] +
-                (end[1] - start[1]) *
-                ratio;
-
-            samples.push([
-                lng,
-                lat
-            ]);
+            continue;
         }
+
+        const segmentStartDistance =
+            cumulativeDistance;
+
+        const segmentEndDistance =
+            cumulativeDistance +
+            segmentDistance;
+
+        while (
+            nextSampleDistance <=
+            segmentEndDistance
+        ) {
+
+            const distanceIntoSegment =
+                nextSampleDistance -
+                segmentStartDistance;
+
+            const ratio =
+                distanceIntoSegment /
+                segmentDistance;
+
+            const sample = [
+
+                previousPoint[0] +
+                    (
+                        currentPoint[0] -
+                        previousPoint[0]
+                    ) *
+                    ratio,
+
+                previousPoint[1] +
+                    (
+                        currentPoint[1] -
+                        previousPoint[1]
+                    ) *
+                    ratio
+            ];
+
+            samples.push(sample);
+
+            nextSampleDistance +=
+                spacingKm;
+        }
+
+        cumulativeDistance =
+            segmentEndDistance;
+
+        previousPoint =
+            currentPoint;
+    }
+
+    // Always include exact destination.
+    const lastPoint =
+        coordinates[
+            coordinates.length - 1
+        ];
+
+    const lastSample =
+        samples[
+            samples.length - 1
+        ];
+
+    if (
+        !lastSample ||
+        distanceKm(
+            lastSample,
+            lastPoint
+        ) > 0.001
+    ) {
+
+        samples.push(lastPoint);
     }
 
     return samples;
 }
 
+
 // ============================================================
-// COUNTRY KEY
+// COUNTRY SEQUENCE HELPERS
 // ============================================================
 
 function getCountryKey(country) {
+
     if (!country) {
         return null;
     }
@@ -215,30 +348,31 @@ function getCountryKey(country) {
     );
 }
 
-// ============================================================
-// COUNTRY SEQUENCE
+
+// ------------------------------------------------------------
+// Remove ONLY consecutive duplicates.
 //
-// Converts:
+// IND -> BTN -> IND
 //
-// IND IND IND IND BTN BTN BTN
+// becomes:
 //
-// into:
+// IND -> BTN -> IND
 //
-// IND BTN
+// NOT:
 //
-// WITHOUT removing information about the order.
-// ============================================================
+// IND -> BTN
+// ------------------------------------------------------------
 
 function compressCountrySequence(
     countries
 ) {
-    const sequence = [];
+
+    const result = [];
 
     let previousKey = null;
 
-    for (
-        const country of countries
-    ) {
+    for (const country of countries) {
+
         const key =
             getCountryKey(country);
 
@@ -246,223 +380,118 @@ function compressCountrySequence(
             continue;
         }
 
-        if (
-            key === previousKey
-        ) {
-            continue;
+        if (key !== previousKey) {
+
+            result.push(country);
+
+            previousKey = key;
         }
-
-        sequence.push(country);
-
-        previousKey = key;
     }
 
-    return sequence;
+    return result;
 }
 
-// ============================================================
-// FIND STABLE COUNTRY TRANSITIONS
-//
-// A single polygon classification near a border should not
-// immediately count as an international crossing.
-//
-// Example:
-//
-// IND IND IND BTN IND IND
-//
-// The isolated BTN point is treated as boundary noise.
-//
-// But:
-//
-// IND IND IND BTN BTN BTN IND
-//
-// represents a real route segment through Bhutan.
-// ============================================================
 
-function stabilizeCountrySequence(
-    countries,
-    minimumConsecutiveSamples = 3
+function cleanCountrySequence(
+    countries
 ) {
-    if (
-        !Array.isArray(countries) ||
-        countries.length === 0
-    ) {
-        return [];
-    }
 
-    const stable = [];
-
-    let currentCountry =
-        countries[0];
-
-    stable.push(
-        currentCountry
+    return compressCountrySequence(
+        countries
     );
-
-    let candidateCountry = null;
-    let candidateCount = 0;
-
-    for (
-        let i = 1;
-        i < countries.length;
-        i++
-    ) {
-        const country =
-            countries[i];
-
-        const currentKey =
-            getCountryKey(
-                currentCountry
-            );
-
-        const countryKey =
-            getCountryKey(
-                country
-            );
-
-        if (!countryKey) {
-            continue;
-        }
-
-        // Same country as current stable country.
-        if (
-            countryKey === currentKey
-        ) {
-            candidateCountry = null;
-            candidateCount = 0;
-            continue;
-        }
-
-        // New candidate country.
-        if (
-            getCountryKey(
-                candidateCountry
-            ) === countryKey
-        ) {
-            candidateCount++;
-        } else {
-            candidateCountry = country;
-            candidateCount = 1;
-        }
-
-        // Country transition is considered real only after
-        // several consecutive samples.
-        if (
-            candidateCount >=
-            minimumConsecutiveSamples
-        ) {
-            currentCountry =
-                candidateCountry;
-
-            stable.push(
-                currentCountry
-            );
-
-            candidateCountry = null;
-            candidateCount = 0;
-        }
-    }
-
-    return stable;
 }
 
+
 // ============================================================
-// INTERNATIONAL ROUTE ASSESSMENT
+// INTERNAL ROUTE ASSESSMENT
+// ============================================================
 //
-// coordinates:
-//     Actual OSRM route geometry.
+// This performs the actual polygon analysis.
 //
-// sourceCountryCode:
-//     Country obtained from ORS geocoding.
+// Keeping this separate allows us to use exactly the same
+// border logic for:
 //
-// destinationCountryCode:
-//     Country obtained from ORS geocoding.
+// 1. complete routes
+// 2. individual route legs
+//
 // ============================================================
 
-function assessInternationalRoute(
+function assessRouteGeometry(
     coordinates,
     sourceCountryCode = null,
     destinationCountryCode = null
 ) {
-    // --------------------------------------------------------
-    // Validate route
-    // --------------------------------------------------------
-
-    if (
-        !Array.isArray(coordinates) ||
-        coordinates.length < 2
-    ) {
-        return {
-            international: false,
-            countriesCrossed: [],
-            countryCodes: [],
-            borderWarning: null,
-            borderAssessment: "NO_ROUTE_GEOMETRY"
-        };
-    }
-
-    // --------------------------------------------------------
-    // Normalize country codes
-    // --------------------------------------------------------
 
     const sourceCode =
         sourceCountryCode
             ? String(
-                sourceCountryCode
-            ).toUpperCase()
+                  sourceCountryCode
+              ).toUpperCase()
             : null;
 
     const destinationCode =
         destinationCountryCode
             ? String(
-                destinationCountryCode
-            ).toUpperCase()
+                  destinationCountryCode
+              ).toUpperCase()
             : null;
 
+
     // --------------------------------------------------------
-    // Sample actual route
+    // Fast endpoint check
+    // --------------------------------------------------------
+
+    const endpointsInternational =
+        Boolean(
+            sourceCode &&
+            destinationCode &&
+            sourceCode !== destinationCode
+        );
+
+
+    // --------------------------------------------------------
+    // Sample FULL geometry every 5 km
     // --------------------------------------------------------
 
     const samples =
         sampleRouteCoordinates(
             coordinates,
-            1
+            5
         );
 
-    // --------------------------------------------------------
-    // Determine country for every route sample
-    // --------------------------------------------------------
 
     const rawCountries = [];
 
-    for (
-        const coordinate of samples
-    ) {
+    for (const coordinate of samples) {
+
         const country =
             getCountryAtCoordinate(
                 coordinate
             );
 
         if (country) {
+
             rawCountries.push(
                 country
             );
         }
     }
 
+
     // --------------------------------------------------------
-    // If polygon lookup failed completely, fall back to
-    // endpoint country information.
+    // Polygon lookup completely failed
     // --------------------------------------------------------
 
     if (
         rawCountries.length === 0
     ) {
-        const endpointCountries = [];
+
+        const fallbackCountries = [];
 
         if (sourceCode) {
-            endpointCountries.push({
-                name: null,
+
+            fallbackCountries.push({
+                name: sourceCode,
                 code: sourceCode
             });
         }
@@ -471,36 +500,44 @@ function assessInternationalRoute(
             destinationCode &&
             destinationCode !== sourceCode
         ) {
-            endpointCountries.push({
-                name: null,
+
+            fallbackCountries.push({
+                name: destinationCode,
                 code: destinationCode
             });
         }
 
+        const routeSequence =
+            cleanCountrySequence(
+                fallbackCountries
+            );
+
+        const routeCodes =
+            routeSequence
+                .map(
+                    country =>
+                        getCountryKey(
+                            country
+                        )
+                )
+                .filter(Boolean);
+
         const international =
-            sourceCode &&
-            destinationCode &&
-            sourceCode !== destinationCode;
+            endpointsInternational ||
+            routeCodes.length > 1;
 
         return {
-            international: Boolean(
-                international
-            ),
+
+            international,
 
             countriesCrossed:
-                endpointCountries
-                    .map(
-                        country =>
-                            country.name
-                    )
-                    .filter(Boolean),
+                routeSequence.map(
+                    country =>
+                        country.name
+                ),
 
             countryCodes:
-                endpointCountries
-                    .map(
-                        country =>
-                            country.code
-                    ),
+                routeCodes,
 
             borderWarning:
                 international
@@ -508,39 +545,37 @@ function assessInternationalRoute(
                     : null,
 
             borderAssessment:
-                "ENDPOINT_COUNTRY_FALLBACK"
+                endpointsInternational
+                    ? "ENDPOINT_COUNTRIES_DIFFER"
+                    : international
+                    ? "POLYGON_ROUTE_TRANSITION"
+                    : "DOMESTIC_ROUTE"
         };
     }
 
-    // --------------------------------------------------------
-    // Stabilize route country sequence
-    // --------------------------------------------------------
 
-    const stableCountries =
-        stabilizeCountrySequence(
-            rawCountries,
-            3
-        );
+    // --------------------------------------------------------
+    // Compress consecutive countries
+    // --------------------------------------------------------
 
     const routeSequence =
-        compressCountrySequence(
-            stableCountries
+        cleanCountrySequence(
+            rawCountries
         );
-
-    // --------------------------------------------------------
-    // Convert route sequence into codes
-    // --------------------------------------------------------
 
     const routeCodes =
         routeSequence
             .map(
                 country =>
-                    getCountryKey(country)
+                    getCountryKey(
+                        country
+                    )
             )
             .filter(Boolean);
 
+
     // --------------------------------------------------------
-    // Determine whether the route actually changed country.
+    // Detect country transitions
     // --------------------------------------------------------
 
     let polylineInternational =
@@ -551,241 +586,123 @@ function assessInternationalRoute(
         i < routeCodes.length;
         i++
     ) {
+
         if (
             routeCodes[i] !==
             routeCodes[i - 1]
         ) {
-            polylineInternational = true;
+
+            polylineInternational =
+                true;
+
             break;
         }
     }
 
-    // --------------------------------------------------------
-    // Endpoint country validation
-    //
-    // Different source/destination countries strongly indicate
-    // an international trip.
-    // --------------------------------------------------------
-
-    const endpointsInternational =
-        Boolean(
-            sourceCode &&
-            destinationCode &&
-            sourceCode !== destinationCode
-        );
 
     // --------------------------------------------------------
-    // Final decision
-    //
-    // 1. If source and destination are different countries,
-    //    the trip is international.
-    //
-    // 2. If source and destination are the same country,
-    //    only a REAL country transition along the polyline
-    //    makes it international.
-    //
-    // This prevents a brief polygon error near a border from
-    // incorrectly flagging ordinary domestic routes.
+    // Final international decision
     // --------------------------------------------------------
 
     const international =
         endpointsInternational ||
         polylineInternational;
 
+
     // --------------------------------------------------------
-    // Build country list.
-    //
-    // Prefer actual route countries, but make sure known
-    // endpoint countries are represented.
+    // Preserve ordered country sequence
     // --------------------------------------------------------
 
-    const countries = [];
-
-    const seen =
-        new Set();
-
-    function addCountry(
-        country
-    ) {
-        const code =
-            getCountryKey(country);
-
-        if (
-            !code ||
-            seen.has(code)
-        ) {
-            return;
-        }
-
-        seen.add(code);
-
-        countries.push(
-            country
-        );
-    }
+    const orderedCountries = [];
 
     for (
         const country of routeSequence
     ) {
-        addCountry(country);
+
+        orderedCountries.push(
+            country
+        );
     }
 
-    // Add source/destination if they are not present in
-    // polygon results.
-    if (sourceCode) {
-        addCountry({
-            name:
-                sourceCode === "IND"
-                    ? "India"
-                    : null,
-            code:
-                sourceCode
-        });
-    }
-
-    if (destinationCode) {
-        addCountry({
-            name:
-                destinationCode === "BTN"
-                    ? "Bhutan"
-                    : null,
-            code:
-                destinationCode
-        });
-    }
 
     // --------------------------------------------------------
-    // Order endpoint countries correctly for the common
-    // source → destination case.
-    //
-    // For international routes we want:
-    //
-    // IND → BTN
-    //
-    // rather than depending entirely on polygon ordering.
+    // Make sure source country is represented
     // --------------------------------------------------------
 
     if (
         sourceCode &&
-        destinationCode &&
-        sourceCode !== destinationCode
+        (
+            orderedCountries.length === 0 ||
+            getCountryKey(
+                orderedCountries[0]
+            ) !== sourceCode
+        )
     ) {
-        const orderedCountries = [];
 
-        const sourceCountry =
-            countries.find(
-                country =>
-                    getCountryKey(
-                        country
-                    ) === sourceCode
-            );
+        orderedCountries.unshift({
 
-        const destinationCountry =
-            countries.find(
-                country =>
-                    getCountryKey(
-                        country
-                    ) === destinationCode
-            );
-
-        if (sourceCountry) {
-            orderedCountries.push(
-                sourceCountry
-            );
-        }
-
-        for (
-            const country of countries
-        ) {
-            const code =
-                getCountryKey(country);
-
-            if (
-                code === sourceCode ||
-                code === destinationCode
-            ) {
-                continue;
-            }
-
-            orderedCountries.push(
-                country
-            );
-        }
-
-        if (destinationCountry) {
-            orderedCountries.push(
-                destinationCountry
-            );
-        }
-
-        countries.length = 0;
-
-        for (
-            const country of orderedCountries
-        ) {
-            countries.push(
-                country
-            );
-        }
+            name: sourceCode,
+            code: sourceCode
+        });
     }
 
+
     // --------------------------------------------------------
-    // Names
+    // Make sure destination country is represented
     // --------------------------------------------------------
 
-    const countriesCrossed =
-        countries
+    if (
+        destinationCode &&
+        (
+            orderedCountries.length === 0 ||
+            getCountryKey(
+                orderedCountries[
+                    orderedCountries.length - 1
+                ]
+            ) !== destinationCode
+        )
+    ) {
+
+        orderedCountries.push({
+
+            name: destinationCode,
+            code: destinationCode
+        });
+    }
+
+
+    // --------------------------------------------------------
+    // Re-compress after endpoint additions
+    // --------------------------------------------------------
+
+    const finalCountries =
+        compressCountrySequence(
+            orderedCountries
+        );
+
+    const finalCodes =
+        finalCountries
             .map(
                 country =>
-                    country.name
+                    getCountryKey(
+                        country
+                    )
             )
             .filter(Boolean);
 
-    const countryCodes =
-        countries
-            .map(
-                country =>
-                    country.code
-            )
-            .filter(Boolean);
-
-    // --------------------------------------------------------
-    // Final logging
-    //
-    // IMPORTANT:
-    // We deliberately DO NOT log every coordinate.
-    // --------------------------------------------------------
-
-    console.log(
-        "Border assessment:",
-        {
-            sourceCountry:
-                sourceCode,
-
-            destinationCountry:
-                destinationCode,
-
-            routeCountrySequence:
-                routeCodes,
-
-            international,
-
-            countriesCrossed,
-
-            countryCodes
-        }
-    );
-
-    // --------------------------------------------------------
-    // Return
-    // --------------------------------------------------------
 
     return {
+
         international,
 
-        countriesCrossed,
+        countriesCrossed:
+            finalCountries.map(
+                country =>
+                    country.name
+            ),
 
-        countryCodes,
+        countryCodes:
+            finalCodes,
 
         borderWarning:
             international
@@ -796,15 +713,272 @@ function assessInternationalRoute(
             endpointsInternational
                 ? "ENDPOINT_COUNTRIES_DIFFER"
                 : polylineInternational
-                    ? "POLYLINE_COUNTRY_TRANSITION"
-                    : "DOMESTIC_ROUTE"
+                ? "POLYLINE_COUNTRY_TRANSITION"
+                : "DOMESTIC_ROUTE"
     };
 }
 
+
 // ============================================================
-// EXPORT
+// INTERNATIONAL ROUTE ASSESSMENT
+// ============================================================
+//
+// Public API used by the existing server.
+//
+// This remains completely backward compatible.
+//
+// ============================================================
+
+function assessInternationalRoute(
+    coordinates,
+    sourceCountryCode = null,
+    destinationCountryCode = null
+) {
+
+    return assessRouteGeometry(
+        coordinates,
+        sourceCountryCode,
+        destinationCountryCode
+    );
+}
+
+
+// ============================================================
+// ROUTE LEG ASSESSMENT
+// ============================================================
+//
+// NEW:
+//
+// Used when a route is constructed from multiple legs:
+//
+// Source
+//   ↓
+// Waypoint 1
+//   ↓
+// Waypoint 2
+//   ↓
+// Destination
+//
+// Every leg is independently checked.
+//
+// If even ONE leg crosses an international border,
+// the complete strategy is rejected.
+//
+// IMPORTANT:
+// This does NOT replace the full-route check.
+// It supplements it.
+//
+// ============================================================
+
+function assessRouteLeg(
+    coordinates,
+    sourceCountryCode = null,
+    destinationCountryCode = null
+) {
+
+    const assessment =
+        assessRouteGeometry(
+            coordinates,
+            sourceCountryCode,
+            destinationCountryCode
+        );
+
+    return {
+
+        ...assessment,
+
+        legInternational:
+            assessment.international
+    };
+}
+
+
+// ============================================================
+// MULTI-LEG ROUTE ASSESSMENT
+// ============================================================
+//
+// Expected input:
+//
+// [
+//
+//   {
+//      coordinates: [...],
+//      sourceCountryCode: "IND",
+//      destinationCountryCode: "IND"
+//   },
+//
+//   {
+//      coordinates: [...],
+//      sourceCountryCode: "IND",
+//      destinationCountryCode: "IND"
+//   }
+//
+// ]
+//
+// The function evaluates every leg independently.
+//
+// ============================================================
+
+function assessRouteLegs(
+    legs = []
+) {
+
+    if (!Array.isArray(legs)) {
+
+        return {
+
+            international: true,
+
+            countriesCrossed: [],
+
+            countryCodes: [],
+
+            borderWarning:
+                "Route legs could not be validated.",
+
+            borderAssessment:
+                "INVALID_ROUTE_LEGS",
+
+            legs: []
+        };
+    }
+
+
+    const legAssessments = [];
+
+    const combinedCountries = [];
+
+    const combinedCodes = [];
+
+
+    for (
+        let i = 0;
+        i < legs.length;
+        i++
+    ) {
+
+        const leg =
+            legs[i] || {};
+
+        const assessment =
+            assessRouteLeg(
+                leg.coordinates,
+                leg.sourceCountryCode,
+                leg.destinationCountryCode
+            );
+
+
+        legAssessments.push({
+
+            legNumber: i + 1,
+
+            international:
+                assessment.international,
+
+            countriesCrossed:
+                assessment.countriesCrossed,
+
+            countryCodes:
+                assessment.countryCodes,
+
+            borderWarning:
+                assessment.borderWarning,
+
+            borderAssessment:
+                assessment.borderAssessment
+        });
+
+
+        for (
+            const country of
+            assessment.countriesCrossed
+        ) {
+
+            const previous =
+                combinedCountries[
+                    combinedCountries.length - 1
+                ];
+
+            if (country !== previous) {
+
+                combinedCountries.push(
+                    country
+                );
+            }
+        }
+
+
+        for (
+            const code of
+            assessment.countryCodes
+        ) {
+
+            const previous =
+                combinedCodes[
+                    combinedCodes.length - 1
+                ];
+
+            if (code !== previous) {
+
+                combinedCodes.push(
+                    code
+                );
+            }
+        }
+    }
+
+
+    const failedLeg =
+        legAssessments.find(
+            leg =>
+                leg.international
+        );
+
+
+    const international =
+        Boolean(failedLeg);
+
+
+    return {
+
+        international,
+
+        countriesCrossed:
+            combinedCountries,
+
+        countryCodes:
+            combinedCodes,
+
+        borderWarning:
+            international
+                ? "International border crossing detected on one or more route legs."
+                : null,
+
+        borderAssessment:
+            international
+                ? "LEG_INTERNATIONAL_ROUTE"
+                : "ALL_LEGS_DOMESTIC",
+
+        failedLeg:
+            failedLeg
+                ? failedLeg.legNumber
+                : null,
+
+        legs:
+            legAssessments
+    };
+}
+
+
+// ============================================================
+// EXPORTS
 // ============================================================
 
 module.exports = {
-    assessInternationalRoute
+
+    assessInternationalRoute,
+
+    assessRouteLeg,
+
+    assessRouteLegs
 };

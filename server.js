@@ -13,12 +13,16 @@ const {
 } = require("./services/geocodingService");
 
 const {
-    getOSRMRoutes,
-    convertOSRMRoute
+    getStandardRouteBatch,
+    getWaypointRouteBatch,
+    generateWaypointStrategies,
+    convertOSRMRoute,
+    isRouteTooSimilar
 } = require("./services/routingService");
 
 const {
-    assessRouteHazards
+    assessRouteHazards,
+    collectEnvironmentalData
 } = require("./services/hazardService");
 
 const {
@@ -30,37 +34,43 @@ const {
 } = require("./services/borderService");
 
 // ============================================================
-// OMS - VENDOR SERVICE
+// OMS SERVICES
 // ============================================================
 
 const vendorService =
     require("./services/vendorService");
 
-// ============================================================
-// OMS - FLEET / VEHICLE SERVICE
-// ============================================================
-
 const fleetService =
     require("./services/fleetService");
 
-// ============================================================
-// OMS - SHIPMENT SERVICE
-// ============================================================
-
 const shipmentService =
     require("./services/shipmentService");
+
+// ============================================================
+// PROGRESSIVE ROUTE SEARCH CONFIGURATION
+// ============================================================
+
+const MINIMUM_DOMESTIC_ROUTES = 1;
+
+const PREFERRED_DOMESTIC_ROUTES = 2;
+
+const MAX_RETURNED_DOMESTIC_ROUTES = 3;
 
 // ============================================================
 // CORS
 // ============================================================
 
 const CORS_HEADERS = {
+
     "Access-Control-Allow-Origin":
         "http://localhost:5173",
+
     "Access-Control-Allow-Methods":
         "GET, POST, PUT, DELETE, OPTIONS",
+
     "Access-Control-Allow-Headers":
         "Content-Type"
+
 };
 
 // ============================================================
@@ -68,6 +78,7 @@ const CORS_HEADERS = {
 // ============================================================
 
 function readBody(req) {
+
     return new Promise(
         (resolve, reject) => {
 
@@ -76,7 +87,9 @@ function readBody(req) {
             req.on(
                 "data",
                 chunk => {
+
                     body += chunk;
+
                 }
             );
 
@@ -87,8 +100,11 @@ function readBody(req) {
                     try {
 
                         if (!body) {
+
                             resolve({});
+
                             return;
+
                         }
 
                         resolve(
@@ -102,7 +118,9 @@ function readBody(req) {
                                 "Invalid JSON body"
                             )
                         );
+
                     }
+
                 }
             );
 
@@ -110,13 +128,11 @@ function readBody(req) {
                 "error",
                 reject
             );
+
         }
     );
-}
 
-// ============================================================
-// SEND JSON
-// ============================================================
+}
 
 function sendJSON(
     res,
@@ -136,11 +152,8 @@ function sendJSON(
     res.end(
         JSON.stringify(data)
     );
-}
 
-// ============================================================
-// GET PATH
-// ============================================================
+}
 
 function getPath(url) {
 
@@ -149,10 +162,220 @@ function getPath(url) {
 }
 
 // ============================================================
-// ROUTE REQUEST VALIDATION
+// INDIA-ONLY ROUTE POLICY
 // ============================================================
 
-function validateRouteRequest(body) {
+function isIndiaLocation(
+    location
+) {
+
+    const countryCode =
+        location &&
+        location.countryCode
+            ? String(
+                location.countryCode
+            )
+                .trim()
+                .toUpperCase()
+            : "";
+
+    const country =
+        location &&
+        location.country
+            ? String(
+                location.country
+            )
+                .trim()
+                .toUpperCase()
+            : "";
+
+    return (
+
+        countryCode === "IND" ||
+
+        countryCode === "IN" ||
+
+        countryCode === "INDIA" ||
+
+        country === "INDIA" ||
+
+        country.includes("INDIA")
+
+    );
+
+}
+
+// ============================================================
+// ROUTE BORDER VERIFICATION
+// ============================================================
+
+function verifyIndiaOnlyRoute(
+    border
+) {
+
+    if (
+        !border ||
+        typeof border !== "object"
+    ) {
+
+        return {
+
+            valid: false,
+
+            reason:
+                "BORDER_ASSESSMENT_MISSING",
+
+            countryCodes: [],
+
+            countriesCrossed: []
+
+        };
+
+    }
+
+    const countryCodes =
+        Array.isArray(
+            border.countryCodes
+        )
+            ? border.countryCodes
+                .map(
+                    code =>
+                        String(code)
+                            .trim()
+                            .toUpperCase()
+                )
+                .filter(Boolean)
+            : [];
+
+    const countriesCrossed =
+        Array.isArray(
+            border.countriesCrossed
+        )
+            ? border.countriesCrossed
+                .map(
+                    country =>
+                        String(country)
+                            .trim()
+                            .toUpperCase()
+                )
+                .filter(Boolean)
+            : [];
+
+    if (
+        border.international !== false
+    ) {
+
+        return {
+
+            valid: false,
+
+            reason:
+                border.international === true
+                    ? "INTERNATIONAL_ROUTE"
+                    : "ROUTE_NOT_VERIFIED_AS_DOMESTIC",
+
+            countryCodes,
+
+            countriesCrossed
+
+        };
+
+    }
+
+    if (
+        countryCodes.length === 0
+    ) {
+
+        return {
+
+            valid: false,
+
+            reason:
+                "NO_COUNTRY_CODES_RETURNED",
+
+            countryCodes,
+
+            countriesCrossed
+
+        };
+
+    }
+
+    const onlyIndiaCodes =
+        countryCodes.every(
+            code =>
+                code === "IND" ||
+                code === "IN"
+        );
+
+    if (
+        !onlyIndiaCodes
+    ) {
+
+        return {
+
+            valid: false,
+
+            reason:
+                "NON_INDIA_COUNTRY_DETECTED",
+
+            countryCodes,
+
+            countriesCrossed
+
+        };
+
+    }
+
+    const onlyIndiaCountries =
+        countriesCrossed.length === 0 ||
+        countriesCrossed.every(
+            country =>
+                country === "INDIA" ||
+                country === "IND"
+        );
+
+    if (
+        !onlyIndiaCountries
+    ) {
+
+        return {
+
+            valid: false,
+
+            reason:
+                "NON_INDIA_COUNTRY_DETECTED",
+
+            countryCodes,
+
+            countriesCrossed
+
+        };
+
+    }
+
+    return {
+
+        valid: true,
+
+        reason:
+            "VERIFIED_INDIA_ONLY",
+
+        countryCodes,
+
+        countriesCrossed
+
+    };
+
+}
+
+// ============================================================
+// REQUEST VALIDATION
+// ============================================================
+
+function validateRouteRequest(
+    body
+) {
 
     if (!body.source) {
 
@@ -170,11 +393,9 @@ function validateRouteRequest(body) {
 
 }
 
-// ============================================================
-// VENDOR REQUEST VALIDATION
-// ============================================================
-
-function validateVendorRequest(body) {
+function validateVendorRequest(
+    body
+) {
 
     if (!body.name) {
 
@@ -192,11 +413,9 @@ function validateVendorRequest(body) {
 
 }
 
-// ============================================================
-// VEHICLE REQUEST VALIDATION
-// ============================================================
-
-function validateVehicleRequest(body) {
+function validateVehicleRequest(
+    body
+) {
 
     if (!body.registrationNumber) {
 
@@ -229,11 +448,9 @@ function validateVehicleRequest(body) {
 
 }
 
-// ============================================================
-// SHIPMENT REQUEST VALIDATION
-// ============================================================
-
-function validateShipmentRequest(body) {
+function validateShipmentRequest(
+    body
+) {
 
     if (!body.vehicleId) {
 
@@ -275,6 +492,28 @@ function validateShipmentRequest(body) {
 // ============================================================
 // NORMALIZE ROUTE
 // ============================================================
+//
+// IMPORTANT:
+//
+// This function now explicitly verifies that duration from
+// convertOSRMRoute() reaches the normalized route.
+//
+// The diagnostic output is intentionally kept here because
+// the current issue is:
+//
+//     Estimated Time : 0 min
+//
+// This lets us determine whether the problem is:
+//
+//     OSRM
+//       ↓
+//     convertOSRMRoute()
+//       ↓
+//     normalizeRoute()
+//       ↓
+//     final route
+//
+// ============================================================
 
 function normalizeRoute(
     route,
@@ -282,43 +521,403 @@ function normalizeRoute(
 ) {
 
     const converted =
-        convertOSRMRoute(route);
+        convertOSRMRoute(
+            route
+        );
+
+    console.log("");
+
+    console.log(
+        `Route ${routeNumber} conversion result:`
+    );
+
+    console.log(
+        "Distance meters:",
+        converted.distanceMeters
+    );
+
+    console.log(
+        "Distance km:",
+        converted.distanceKm
+    );
+
+    console.log(
+        "Duration seconds:",
+        converted.durationSeconds
+    );
+
+    console.log(
+        "Duration minutes:",
+        converted.durationMin
+    );
+
+    const distanceKm =
+        Number(
+            converted.distanceKm
+        );
+
+    const durationMin =
+        Number(
+            converted.durationMin
+        );
+
+    const durationSeconds =
+        Number(
+            converted.durationSeconds
+        );
 
     return {
 
         routeNumber,
 
         distanceKm:
-            Number(
-                converted.distanceKm.toFixed(2)
-            ),
+            Number.isFinite(
+                distanceKm
+            )
+                ? Number(
+                    distanceKm.toFixed(2)
+                )
+                : 0,
 
         durationMin:
-            Number(
-                converted.durationMin.toFixed(2)
-            ),
+            Number.isFinite(
+                durationMin
+            )
+                ? Number(
+                    durationMin.toFixed(2)
+                )
+                : 0,
 
         coordinates:
             converted.coordinates,
 
         distanceMeters:
-            converted.distanceMeters,
+            Number.isFinite(
+                Number(
+                    converted.distanceMeters
+                )
+            )
+                ? Number(
+                    converted.distanceMeters
+                )
+                : 0,
 
         durationSeconds:
-            converted.durationSeconds,
+            Number.isFinite(
+                durationSeconds
+            )
+                ? durationSeconds
+                : 0,
 
-        safetyScore: null,
+        safetyScore:
+            null,
 
-        hazardRisk: null,
+        hazardRisk:
+            null,
 
-        hazardDetails: null
+        hazardDetails:
+            null
 
     };
 
 }
 
 // ============================================================
-// FIND ROUTE HANDLER
+// UNAVAILABLE HAZARD FALLBACK
+// ============================================================
+
+function createUnavailableHazardResult(
+    error
+) {
+
+    const reason =
+        error &&
+        error.message
+            ? error.message
+            : "Environmental assessment unavailable";
+
+    return {
+
+        rainfall:
+            0.50,
+
+        floodRisk:
+            1.00,
+
+        landslideRisk:
+            1.00,
+
+        stormRisk:
+            1.00,
+
+        disasterRisk:
+            1.00,
+
+        overallRisk:
+            1.00,
+
+        pointRisks:
+            [],
+
+        dataUnavailable:
+            true,
+
+        dataUnavailableReason:
+            reason
+
+    };
+
+}
+
+// ============================================================
+// CHECK ONE ROUTE FOR INDIA-ONLY STATUS
+// ============================================================
+
+async function verifyCandidateRoute(
+    candidate,
+    candidateNumber,
+    source,
+    destination
+) {
+
+    let normalizedRoute;
+
+    try {
+
+        normalizedRoute =
+            normalizeRoute(
+                candidate,
+                candidateNumber
+            );
+
+    } catch (
+        routeError
+    ) {
+
+        console.error(
+            `Route ${candidateNumber} normalization failed:`,
+            routeError.message ||
+            routeError
+        );
+
+        return {
+
+            accepted: false,
+
+            reason:
+                "ROUTE_NORMALIZATION_FAILED",
+
+            route: null,
+
+            border: null
+
+        };
+
+    }
+
+    if (
+        !Array.isArray(
+            normalizedRoute.coordinates
+        ) ||
+        normalizedRoute.coordinates.length < 2
+    ) {
+
+        console.error(
+            `Route ${candidateNumber} has invalid route geometry.`
+        );
+
+        return {
+
+            accepted: false,
+
+            reason:
+                "INVALID_ROUTE_GEOMETRY",
+
+            route: null,
+
+            border: null
+
+        };
+
+    }
+
+    let border;
+
+    try {
+
+        console.log("");
+
+        console.log(
+            `Checking border immediately: Route ${candidateNumber}`
+        );
+
+        border =
+            await Promise.resolve(
+                assessInternationalRoute(
+                    normalizedRoute.coordinates,
+                    source.countryCode,
+                    destination.countryCode
+                )
+            );
+
+    } catch (
+        borderError
+    ) {
+
+        console.error("");
+
+        console.error(
+            `Route ${candidateNumber} BORDER ASSESSMENT FAILED`
+        );
+
+        console.error(
+            borderError.message ||
+            borderError
+        );
+
+        return {
+
+            accepted: false,
+
+            reason:
+                "FULL_ROUTE_BORDER_ASSESSMENT_FAILED",
+
+            route: null,
+
+            border: null
+
+        };
+
+    }
+
+    console.log("");
+
+    console.log(
+        `---------- BORDER CHECK: ROUTE ${candidateNumber} ----------`
+    );
+
+    console.log(
+        "International:",
+        border &&
+        border.international
+    );
+
+    console.log(
+        "Countries crossed:",
+        border &&
+        border.countriesCrossed
+    );
+
+    console.log(
+        "Country codes:",
+        border &&
+        border.countryCodes
+    );
+
+    console.log(
+        "Border assessment:",
+        border &&
+        border.borderAssessment
+    );
+
+    const verification =
+        verifyIndiaOnlyRoute(
+            border
+        );
+
+    if (
+        !verification.valid
+    ) {
+
+        console.log("");
+
+        console.log(
+            `Route ${candidateNumber} REJECTED`
+        );
+
+        console.log(
+            "Reason:",
+            verification.reason
+        );
+
+        console.log(
+            "Countries:",
+            verification.countriesCrossed
+        );
+
+        console.log(
+            "Country codes:",
+            verification.countryCodes
+        );
+
+        return {
+
+            accepted: false,
+
+            reason:
+                verification.reason,
+
+            route: normalizedRoute,
+
+            border: {
+
+                ...border,
+
+                international:
+                    border &&
+                    border.international !== undefined
+                        ? border.international
+                        : true,
+
+                countriesCrossed:
+                    verification.countriesCrossed,
+
+                countryCodes:
+                    verification.countryCodes
+
+            }
+
+        };
+
+    }
+
+    console.log("");
+
+    console.log(
+        `Route ${candidateNumber} ACCEPTED: VERIFIED INDIA ONLY`
+    );
+
+    return {
+
+        accepted: true,
+
+        reason:
+            "VERIFIED_INDIA_ONLY",
+
+        route:
+            normalizedRoute,
+
+        border: {
+
+            ...border,
+
+            international:
+                false,
+
+            countriesCrossed:
+                verification.countriesCrossed,
+
+            countryCodes:
+                verification.countryCodes
+
+        }
+
+    };
+
+}
+
+// ============================================================
+// FIND ROUTE
 // ============================================================
 
 async function handleFindRoute(
@@ -349,12 +948,10 @@ async function handleFindRoute(
 
         console.log("");
 
-        // ----------------------------------------------------
-        // VALIDATION
-        // ----------------------------------------------------
-
         const validationError =
-            validateRouteRequest(body);
+            validateRouteRequest(
+                body
+            );
 
         if (validationError) {
 
@@ -371,10 +968,6 @@ async function handleFindRoute(
 
         }
 
-        // ----------------------------------------------------
-        // REQUEST PARAMETERS
-        // ----------------------------------------------------
-
         const urgency =
             String(
                 body.urgency ||
@@ -389,9 +982,9 @@ async function handleFindRoute(
             body.shipment ||
             null;
 
-        // ----------------------------------------------------
+        // ====================================================
         // GEOCODING
-        // ----------------------------------------------------
+        // ====================================================
 
         console.log(
             "Geocoding source..."
@@ -421,48 +1014,862 @@ async function handleFindRoute(
             destination
         );
 
-        // ----------------------------------------------------
-        // GENERATE CANDIDATE ROUTES
-        // ----------------------------------------------------
+        // ====================================================
+        // INDIA-ONLY ENDPOINT VALIDATION
+        // ====================================================
+
+        if (
+            !isIndiaLocation(
+                source
+            )
+        ) {
+
+            sendJSON(
+                res,
+                422,
+                {
+
+                    error:
+                        "International routes are not supported.",
+
+                    message:
+                        "SILP currently supports routes within India only.",
+
+                    rejectedEndpoint:
+                        "source",
+
+                    source,
+
+                    routeScope:
+                        "INDIA_ONLY"
+
+                }
+            );
+
+            return;
+
+        }
+
+        if (
+            !isIndiaLocation(
+                destination
+            )
+        ) {
+
+            sendJSON(
+                res,
+                422,
+                {
+
+                    error:
+                        "International routes are not supported.",
+
+                    message:
+                        "SILP currently supports routes within India only.",
+
+                    rejectedEndpoint:
+                        "destination",
+
+                    destination,
+
+                    routeScope:
+                        "INDIA_ONLY"
+
+                }
+            );
+
+            return;
+
+        }
+
+        console.log(
+            "India-only endpoint validation: PASSED"
+        );
+
+        // ====================================================
+        // PROGRESSIVE INDIA-ONLY ROUTE SEARCH
+        // ====================================================
 
         console.log("");
 
         console.log(
-            "Generating candidate routes..."
+            "================================================"
         );
 
-        const osrmRoutes =
-            await getOSRMRoutes(
+        console.log(
+            "PROGRESSIVE INDIA-ONLY ROUTE SEARCH"
+        );
+
+        console.log(
+            "================================================"
+        );
+
+        console.log(
+            "Minimum domestic routes:",
+            MINIMUM_DOMESTIC_ROUTES
+        );
+
+        console.log(
+            "Preferred domestic routes:",
+            PREFERRED_DOMESTIC_ROUTES
+        );
+
+        console.log(
+            "Maximum returned:",
+            MAX_RETURNED_DOMESTIC_ROUTES
+        );
+
+        const domesticRoutes = [];
+
+        const rejectedInternationalRoutes = [];
+
+        const rejectedSimilarRoutes = [];
+
+        let totalCandidateRoutesChecked = 0;
+
+        let generationBatchCount = 0;
+
+        let stoppedEarly =
+            false;
+
+        // ----------------------------------------------------
+        // PROCESS ONE OSRM BATCH
+        // ----------------------------------------------------
+
+        async function processRouteBatch(
+            candidates,
+            strategyName
+        ) {
+
+            if (
+                !Array.isArray(
+                    candidates
+                )
+            ) {
+
+                return;
+
+            }
+
+            if (
+                candidates.length === 0
+            ) {
+
+                console.log("");
+
+                console.log(
+                    `${strategyName}: OSRM returned no routes.`
+                );
+
+                return;
+
+            }
+
+            console.log("");
+
+            console.log(
+                `${strategyName}:`
+            );
+
+            console.log(
+                "Routes returned:",
+                candidates.length
+            );
+
+            for (
+                let index = 0;
+                index < candidates.length;
+                index++
+            ) {
+
+                totalCandidateRoutesChecked++;
+
+                const candidateNumber =
+                    totalCandidateRoutesChecked;
+
+                console.log("");
+
+                console.log(
+                    "------------------------------------------------"
+                );
+
+                console.log(
+                    `Checking candidate ${candidateNumber}`
+                );
+
+                console.log(
+                    "Generation strategy:",
+                    strategyName
+                );
+
+                console.log(
+                    "------------------------------------------------"
+                );
+
+                const verification =
+                    await verifyCandidateRoute(
+                        candidates[index],
+                        candidateNumber,
+                        source,
+                        destination
+                    );
+
+                if (
+                    !verification.accepted
+                ) {
+
+                    rejectedInternationalRoutes.push({
+
+                        routeNumber:
+                            candidateNumber,
+
+                        strategy:
+                            strategyName,
+
+                        reason:
+                            verification.reason,
+
+                        countriesCrossed:
+                            verification.border &&
+                            Array.isArray(
+                                verification.border
+                                    .countriesCrossed
+                            )
+                                ? verification.border
+                                    .countriesCrossed
+                                : [],
+
+                        countryCodes:
+                            verification.border &&
+                            Array.isArray(
+                                verification.border
+                                    .countryCodes
+                            )
+                                ? verification.border
+                                    .countryCodes
+                                : [],
+
+                        borderAssessment:
+                            verification.border &&
+                            verification.border
+                                .borderAssessment
+                                ? verification.border
+                                    .borderAssessment
+                                : "ROUTE_NOT_VERIFIED_AS_DOMESTIC"
+
+                    });
+
+                    continue;
+
+                }
+
+                const similarRoute =
+                    domesticRoutes.find(
+                        existingRoute => {
+
+                            try {
+
+                                return isRouteTooSimilar(
+                                    verification.route,
+                                    existingRoute.route
+                                );
+
+                            } catch (
+                                similarityError
+                            ) {
+
+                                console.error(
+                                    `Route similarity check failed for candidate ${candidateNumber}:`,
+                                    similarityError.message ||
+                                    similarityError
+                                );
+
+                                return false;
+
+                            }
+
+                        }
+                    );
+
+                if (
+                    similarRoute
+                ) {
+
+                    console.log("");
+
+                    console.log(
+                        `Route ${candidateNumber} REJECTED AS GEOMETRIC DUPLICATE`
+                    );
+
+                    console.log(
+                        "Duplicate of accepted route:",
+                        similarRoute.route.routeNumber
+                    );
+
+                    console.log(
+                        "Candidate distance:",
+                        verification.route.distanceKm,
+                        "km"
+                    );
+
+                    console.log(
+                        "Existing route distance:",
+                        similarRoute.route.distanceKm,
+                        "km"
+                    );
+
+                    rejectedSimilarRoutes.push({
+
+                        routeNumber:
+                            candidateNumber,
+
+                        strategy:
+                            strategyName,
+
+                        reason:
+                            "ROUTE_GEOMETRY_TOO_SIMILAR",
+
+                        duplicateOfRouteNumber:
+                            similarRoute.route.routeNumber,
+
+                        candidateDistanceKm:
+                            verification.route.distanceKm,
+
+                        existingDistanceKm:
+                            similarRoute.route.distanceKm
+
+                    });
+
+                    continue;
+
+                }
+
+                domesticRoutes.push({
+
+                    route:
+                        verification.route,
+
+                    border:
+                        verification.border,
+
+                    strategy:
+                        strategyName
+
+                });
+
+                console.log("");
+
+                console.log(
+                    "DISTINCT DOMESTIC ROUTE ACCEPTED"
+                );
+
+                console.log(
+                    "Route number:",
+                    verification.route.routeNumber
+                );
+
+                console.log(
+                    "Distance:",
+                    verification.route.distanceKm,
+                    "km"
+                );
+
+                console.log(
+                    "Duration:",
+                    verification.route.durationMin,
+                    "min"
+                );
+
+                console.log(
+                    "Domestic routes found:",
+                    domesticRoutes.length
+                );
+
+                if (
+                    domesticRoutes.length >=
+                    PREFERRED_DOMESTIC_ROUTES
+                ) {
+
+                    console.log("");
+
+                    console.log(
+                        "================================================"
+                    );
+
+                    console.log(
+                        "PREFERRED DOMESTIC ROUTE TARGET REACHED"
+                    );
+
+                    console.log(
+                        "Distinct domestic routes:",
+                        domesticRoutes.length
+                    );
+
+                    console.log(
+                        "No further route-generation requests will be made."
+                    );
+
+                    console.log(
+                        "================================================"
+                    );
+
+                    stoppedEarly =
+                        true;
+
+                    return;
+
+                }
+
+                if (
+                    domesticRoutes.length >=
+                    MAX_RETURNED_DOMESTIC_ROUTES
+                ) {
+
+                    console.log("");
+
+                    console.log(
+                        "Maximum domestic route count reached."
+                    );
+
+                    stoppedEarly =
+                        true;
+
+                    return;
+
+                }
+
+            }
+
+        }
+
+        // ====================================================
+        // BATCH 1: STANDARD OSRM
+        // ====================================================
+
+        generationBatchCount++;
+
+        let standardRoutes = [];
+
+        try {
+
+            standardRoutes =
+                await getStandardRouteBatch(
+                    source,
+                    destination
+                );
+
+        } catch (error) {
+
+            console.error(
+                "Standard OSRM search failed:",
+                error.message ||
+                error
+            );
+
+            standardRoutes = [];
+
+        }
+
+        await processRouteBatch(
+            standardRoutes,
+            "standard"
+        );
+
+        // ====================================================
+        // BATCHES 2+
+        // ====================================================
+
+        if (
+            domesticRoutes.length <
+            PREFERRED_DOMESTIC_ROUTES
+        ) {
+
+            const waypointStrategies =
+                generateWaypointStrategies(
+                    source,
+                    destination
+                );
+
+            console.log("");
+
+            console.log(
+                "Additional waypoint strategies available:",
+                waypointStrategies.length
+            );
+
+            for (
+                const strategy of waypointStrategies
+            ) {
+
+                if (
+                    domesticRoutes.length >=
+                    PREFERRED_DOMESTIC_ROUTES
+                ) {
+
+                    break;
+
+                }
+
+                if (
+                    domesticRoutes.length >=
+                    MAX_RETURNED_DOMESTIC_ROUTES
+                ) {
+
+                    break;
+
+                }
+
+                generationBatchCount++;
+
+                console.log("");
+
+                console.log(
+                    "================================================"
+                );
+
+                console.log(
+                    `PROGRESSIVE BATCH ${generationBatchCount}`
+                );
+
+                console.log(
+                    "Strategy:",
+                    strategy.name
+                );
+
+                console.log(
+                    "Distinct domestic routes currently:",
+                    domesticRoutes.length
+                );
+
+                console.log(
+                    "================================================"
+                );
+
+                let waypointRoutes = [];
+
+                try {
+
+                    waypointRoutes =
+                        await getWaypointRouteBatch(
+                            source,
+                            destination,
+                            strategy.waypoint,
+                            strategy.name
+                        );
+
+                } catch (error) {
+
+                    console.error(
+                        `${strategy.name} failed:`,
+                        error.message ||
+                        error
+                    );
+
+                    waypointRoutes = [];
+
+                }
+
+                await processRouteBatch(
+                    waypointRoutes,
+                    strategy.name
+                );
+
+                if (
+                    stoppedEarly ||
+                    domesticRoutes.length >=
+                    PREFERRED_DOMESTIC_ROUTES
+                ) {
+
+                    break;
+
+                }
+
+            }
+
+        }
+
+        // ====================================================
+        // SEARCH SUMMARY
+        // ====================================================
+
+        console.log("");
+
+        console.log(
+            "================================================"
+        );
+
+        console.log(
+            "PROGRESSIVE ROUTE SEARCH COMPLETE"
+        );
+
+        console.log(
+            "================================================"
+        );
+
+        console.log(
+            "OSRM batches requested:",
+            generationBatchCount
+        );
+
+        console.log(
+            "Candidate routes border-checked:",
+            totalCandidateRoutesChecked
+        );
+
+        console.log(
+            "Distinct domestic routes found:",
+            domesticRoutes.length
+        );
+
+        console.log(
+            "Rejected international/unverified routes:",
+            rejectedInternationalRoutes.length
+        );
+
+        console.log(
+            "Rejected similar routes:",
+            rejectedSimilarRoutes.length
+        );
+
+        console.log(
+            "Stopped after preferred target:",
+            stoppedEarly
+        );
+
+        // ====================================================
+        // REQUIRE AT LEAST ONE DOMESTIC ROUTE
+        // ====================================================
+
+        if (
+            domesticRoutes.length <
+            MINIMUM_DOMESTIC_ROUTES
+        ) {
+
+            console.log("");
+
+            console.log(
+                "================================================"
+            );
+
+            console.log(
+                "NO VERIFIED DOMESTIC ROUTE FOUND"
+            );
+
+            console.log(
+                "================================================"
+            );
+
+            sendJSON(
+                res,
+                422,
+                {
+
+                    error:
+                        "No verified domestic route found.",
+
+                    message:
+                        "SILP could not find a verified route entirely within India for the requested journey.",
+
+                    routeScope:
+                        "INDIA_ONLY",
+
+                    source,
+
+                    destination,
+
+                    minimumDomesticRoutesRequired:
+                        MINIMUM_DOMESTIC_ROUTES,
+
+                    preferredDomesticRoutes:
+                        PREFERRED_DOMESTIC_ROUTES,
+
+                    acceptedDomesticRouteCount:
+                        domesticRoutes.length,
+
+                    candidateRouteCount:
+                        totalCandidateRoutesChecked,
+
+                    generationBatchCount,
+
+                    rejectedInternationalRouteCount:
+                        rejectedInternationalRoutes.length,
+
+                    rejectedSimilarRouteCount:
+                        rejectedSimilarRoutes.length,
+
+                    rejectedInternationalRoutes,
+
+                    rejectedSimilarRoutes
+
+                }
+            );
+
+            return;
+
+        }
+
+        // ====================================================
+        // LIMIT ACCEPTED DOMESTIC ROUTES
+        // ====================================================
+
+        const acceptedDomesticRoutes =
+            domesticRoutes.slice(
+                0,
+                MAX_RETURNED_DOMESTIC_ROUTES
+            );
+
+        console.log("");
+
+        console.log(
+            "Domestic routes after border/diversity filtering:",
+            domesticRoutes.length
+        );
+
+        console.log(
+            "Domestic routes passed to environmental analysis:",
+            acceptedDomesticRoutes.length
+        );
+
+        // ====================================================
+        // RENUMBER ACCEPTED ROUTES
+        // ====================================================
+
+        const routes =
+            acceptedDomesticRoutes.map(
+                (
+                    candidate,
+                    index
+                ) => ({
+
+                    ...candidate.route,
+
+                    routeNumber:
+                        index + 1,
+
+                    international:
+                        false,
+
+                    borderWarning:
+                        null,
+
+                    countriesCrossed:
+                        candidate.border
+                            .countriesCrossed ||
+                        [],
+
+                    countryCodes:
+                        candidate.border
+                            .countryCodes ||
+                        [],
+
+                    borderAssessment:
+                        candidate.border
+                            .borderAssessment ||
+                        "VERIFIED_DOMESTIC_ROUTE",
+
+                    generationStrategy:
+                        candidate.strategy
+
+                })
+            );
+
+        console.log("");
+
+        console.log(
+            "================================================"
+        );
+
+        console.log(
+            "INDIA-ONLY + ROUTE DIVERSITY FILTER RESULT"
+        );
+
+        console.log(
+            "================================================"
+        );
+
+        console.log(
+            "Candidate routes border-checked:",
+            totalCandidateRoutesChecked
+        );
+
+        console.log(
+            "Accepted distinct domestic candidates:",
+            domesticRoutes.length
+        );
+
+        console.log(
+            "Routes used for analysis:",
+            routes.length
+        );
+
+        console.log(
+            "Discarded international/unverified routes:",
+            rejectedInternationalRoutes.length
+        );
+
+        console.log(
+            "Discarded geometrically similar routes:",
+            rejectedSimilarRoutes.length
+        );
+
+        console.log(
+            "Routes passed to environmental analysis:",
+            routes.map(
+                route =>
+                    `Route ${route.routeNumber}`
+            )
+        );
+
+        // ====================================================
+        // ENVIRONMENTAL DATA
+        // ====================================================
+
+        console.log("");
+
+        console.log(
+            "================================================"
+        );
+
+        console.log(
+            "COLLECTING LIVE ENVIRONMENTAL DATA"
+        );
+
+        console.log(
+            "================================================"
+        );
+
+        const environmentalData =
+            await collectEnvironmentalData(
+                routes,
                 source,
                 destination
             );
 
         console.log(
-            "Candidate routes generated:",
-            osrmRoutes.length
+            "Environmental checkpoints:",
+            environmentalData.checkpointCount
         );
 
-        // ----------------------------------------------------
-        // NORMALIZE ROUTES
-        // ----------------------------------------------------
+        console.log(
+            "Live environmental data collection complete."
+        );
 
-        const routes =
-            osrmRoutes.map(
-                (route, index) =>
-                    normalizeRoute(
-                        route,
-                        index + 1
-                    )
-            );
-
-        // ----------------------------------------------------
+        // ====================================================
         // HAZARD ASSESSMENT
-        // ----------------------------------------------------
+        // ====================================================
 
         console.log("");
 
         console.log(
-            "Assessing environmental hazards..."
+            "================================================"
+        );
+
+        console.log(
+            "ASSESSING ROUTE HAZARDS"
+        );
+
+        console.log(
+            "================================================"
         );
 
         const assessedRoutes = [];
@@ -481,21 +1888,37 @@ async function handleFindRoute(
 
             try {
 
+                console.log(
+                    `Assessing Route ${route.routeNumber}...`
+                );
+
                 hazard =
-                    await assessRouteHazardsWithTimeout(
+                    await assessRouteHazards(
                         route,
                         source,
-                        destination
+                        destination,
+                        environmentalData
                     );
 
-            } catch (hazardError) {
+                hazardDataUnavailable =
+                    Boolean(
+                        hazard.dataUnavailable
+                    );
+
+                hazardDataUnavailableReason =
+                    hazard.dataUnavailableReason ||
+                    null;
+
+            } catch (
+                hazardError
+            ) {
 
                 hazardDataUnavailable =
                     true;
 
                 hazardDataUnavailableReason =
                     hazardError.message ||
-                    "Live hazard provider unavailable";
+                    "Environmental assessment unavailable";
 
                 console.error(
                     `Hazard assessment failed for Route ${route.routeNumber}:`,
@@ -510,20 +1933,9 @@ async function handleFindRoute(
 
             }
 
-            // ------------------------------------------------
-            // INTERNATIONAL BORDER ASSESSMENT
-            // ------------------------------------------------
-
-            const border =
-                assessInternationalRoute(
-                    route.coordinates,
-                    source.countryCode,
-                    destination.countryCode
-                );
-
-            // ------------------------------------------------
+            // =================================================
             // SAFETY SCORE
-            // ------------------------------------------------
+            // =================================================
 
             const safetyScore =
                 calculateSafetyScore(
@@ -539,100 +1951,99 @@ async function handleFindRoute(
                 hazardRisk:
                     hazard.overallRisk,
 
-                // ------------------------------------------------
-                // BORDER INFORMATION
-                // ------------------------------------------------
+                hazardDetails:
+                    hazard,
 
                 international:
-                    border.international,
+                    false,
 
                 borderWarning:
-                    border.borderWarning,
+                    null,
 
                 countriesCrossed:
-                    border.countriesCrossed,
+                    route.countriesCrossed,
 
                 countryCodes:
-                    border.countryCodes,
+                    route.countryCodes,
 
-                // ------------------------------------------------
-                // HAZARD DATA STATUS
-                // ------------------------------------------------
+                borderAssessment:
+                    route.borderAssessment,
 
                 hazardDataUnavailable,
 
-                hazardDataUnavailableReason,
-
-                // ------------------------------------------------
-                // HAZARD DETAILS
-                // ------------------------------------------------
-
-                hazardDetails: {
-
-                    rainfall:
-                        hazard.rainfall,
-
-                    floodRisk:
-                        hazard.floodRisk,
-
-                    landslideRisk:
-                        hazard.landslideRisk,
-
-                    stormRisk:
-                        hazard.stormRisk,
-
-                    disasterRisk:
-                        hazard.disasterRisk,
-
-                    overallRisk:
-                        hazard.overallRisk
-
-                }
+                hazardDataUnavailableReason
 
             });
 
+            console.log(
+                `Route ${route.routeNumber} assessed.`
+            );
+
         }
 
-        // ----------------------------------------------------
-        // ROUTE SELECTION
-        // ----------------------------------------------------
-        //
-        // Safety remains independent from distance and ETA.
-        //
-        // The selection layer uses safety first, but prevents
-        // a tiny safety advantage from causing an unreasonable
-        // detour.
-        //
-        // Example:
-        //
-        // Route 1 = 310 km / 98.70
-        // Route 2 = 250 km / 98.60
-        //
-        // Route 2 wins because the safety difference is only
-        // 0.10 points.
-        //
-        // ----------------------------------------------------
+        // ====================================================
+        // ROUTE SELECTION POLICY
+        // ====================================================
 
         const routeSelection =
             selectBestSafetyRoute(
                 assessedRoutes
             );
 
+        if (
+            routeSelection.reason
+        ) {
+
+            routeSelection.reason.domesticOnly =
+                true;
+
+            routeSelection.reason.totalCandidateRoutes =
+                totalCandidateRoutesChecked;
+
+            routeSelection.reason.routesUsedForRecommendation =
+                assessedRoutes.length;
+
+            routeSelection.reason.borderPolicy =
+                "International and unverified routes are discarded; only positively verified India-only routes are selectable";
+
+            routeSelection.reason.rejectedInternationalRouteCount =
+                rejectedInternationalRoutes.length;
+
+            routeSelection.reason.rejectedSimilarRouteCount =
+                rejectedSimilarRoutes.length;
+
+            routeSelection.reason.progressiveSearch =
+                true;
+
+            routeSelection.reason.minimumDomesticRoutesRequired =
+                MINIMUM_DOMESTIC_ROUTES;
+
+            routeSelection.reason.preferredDomesticRoutes =
+                PREFERRED_DOMESTIC_ROUTES;
+
+            routeSelection.reason.maximumReturnedRoutes =
+                MAX_RETURNED_DOMESTIC_ROUTES;
+
+            routeSelection.reason.osrmBatchesRequested =
+                generationBatchCount;
+
+        }
+
         const bestRoute =
             routeSelection.bestRoute;
 
-        // ----------------------------------------------------
+        // ====================================================
         // PRINT RESULT
-        // ----------------------------------------------------
+        // ====================================================
 
         printFinalResult(
             assessedRoutes,
             bestRoute
         );
 
-        // ----------------------------------------------------
+        // ====================================================
         // RESPONSE
-        // ----------------------------------------------------
+        // ====================================================
 
         sendJSON(
             res,
@@ -652,19 +2063,34 @@ async function handleFindRoute(
 
                 shipment,
 
+                routeScope:
+                    "INDIA_ONLY",
+
                 routeCount:
                     assessedRoutes.length,
 
-                // ------------------------------------------------
-                // ROUTE SELECTION EXPLANATION
-                // ------------------------------------------------
+                candidateRouteCount:
+                    totalCandidateRoutesChecked,
+
+                generationBatchCount,
+
+                minimumDomesticRoutesRequired:
+                    MINIMUM_DOMESTIC_ROUTES,
+
+                preferredDomesticRoutes:
+                    PREFERRED_DOMESTIC_ROUTES,
+
+                maximumReturnedRoutes:
+                    MAX_RETURNED_DOMESTIC_ROUTES,
+
+                rejectedInternationalRouteCount:
+                    rejectedInternationalRoutes.length,
+
+                rejectedSimilarRouteCount:
+                    rejectedSimilarRoutes.length,
 
                 routeSelection:
                     routeSelection.reason,
-
-                // ------------------------------------------------
-                // BEST ROUTE SUMMARY
-                // ------------------------------------------------
 
                 bestRoute:
                     bestRoute
@@ -679,6 +2105,9 @@ async function handleFindRoute(
                             durationMin:
                                 bestRoute.durationMin,
 
+                            durationSeconds:
+                                bestRoute.durationSeconds,
+
                             safetyScore:
                                 bestRoute.safetyScore,
 
@@ -686,16 +2115,22 @@ async function handleFindRoute(
                                 bestRoute.hazardRisk,
 
                             international:
-                                bestRoute.international,
+                                false,
 
                             borderWarning:
-                                bestRoute.borderWarning,
+                                null,
 
                             countriesCrossed:
                                 bestRoute.countriesCrossed,
 
                             countryCodes:
                                 bestRoute.countryCodes,
+
+                            borderAssessment:
+                                bestRoute.borderAssessment,
+
+                            generationStrategy:
+                                bestRoute.generationStrategy,
 
                             hazardDataUnavailable:
                                 bestRoute.hazardDataUnavailable,
@@ -704,18 +2139,14 @@ async function handleFindRoute(
                                 bestRoute.hazardDataUnavailableReason
 
                         }
-
                         : null,
 
-                // ------------------------------------------------
-                // ALL ROUTES
-                // ------------------------------------------------
+                rejectedSimilarRoutes,
 
                 routes:
                     assessedRoutes
 
             }
-
         );
 
     } catch (error) {
@@ -729,9 +2160,11 @@ async function handleFindRoute(
             res,
             500,
             {
+
                 error:
                     error.message ||
                     "Failed to find route"
+
             }
         );
 
@@ -740,7 +2173,7 @@ async function handleFindRoute(
 }
 
 // ============================================================
-// CREATE VENDOR HANDLER
+// VENDOR OMS
 // ============================================================
 
 async function handleCreateVendor(
@@ -753,30 +2186,10 @@ async function handleCreateVendor(
         const body =
             await readBody(req);
 
-        console.log("");
-
-        console.log(
-            "================================================"
-        );
-
-        console.log(
-            "          CREATE VENDOR REQUEST"
-        );
-
-        console.log(
-            "================================================"
-        );
-
-        console.log(body);
-
-        console.log("");
-
-        // ----------------------------------------------------
-        // VALIDATION
-        // ----------------------------------------------------
-
         const validationError =
-            validateVendorRequest(body);
+            validateVendorRequest(
+                body
+            );
 
         if (validationError) {
 
@@ -793,32 +2206,21 @@ async function handleCreateVendor(
 
         }
 
-        // ----------------------------------------------------
-        // CREATE VENDOR
-        // ----------------------------------------------------
-
         const vendor =
             vendorService.createVendor(
                 body
             );
 
-        console.log(
-            "Vendor created:",
-            vendor
-        );
-
-        // ----------------------------------------------------
-        // RESPONSE
-        // ----------------------------------------------------
-
         sendJSON(
             res,
             201,
             {
+
                 message:
                     "Vendor created successfully",
 
                 vendor
+
             }
         );
 
@@ -833,19 +2235,17 @@ async function handleCreateVendor(
             res,
             400,
             {
+
                 error:
                     error.message ||
                     "Failed to create vendor"
+
             }
         );
 
     }
 
 }
-
-// ============================================================
-// GET ALL VENDORS
-// ============================================================
 
 function handleGetAllVendors(
     req,
@@ -890,10 +2290,6 @@ function handleGetAllVendors(
 
 }
 
-// ============================================================
-// GET SINGLE VENDOR
-// ============================================================
-
 function handleGetVendor(
     req,
     res,
@@ -932,11 +2328,6 @@ function handleGetVendor(
 
     } catch (error) {
 
-        console.error(
-            "GET VENDOR ERROR:",
-            error
-        );
-
         sendJSON(
             res,
             500,
@@ -949,10 +2340,6 @@ function handleGetVendor(
     }
 
 }
-
-// ============================================================
-// UPDATE VENDOR
-// ============================================================
 
 async function handleUpdateVendor(
     req,
@@ -1001,28 +2388,21 @@ async function handleUpdateVendor(
 
     } catch (error) {
 
-        console.error(
-            "UPDATE VENDOR ERROR:",
-            error
-        );
-
         sendJSON(
             res,
             400,
             {
+
                 error:
                     error.message ||
                     "Failed to update vendor"
+
             }
         );
 
     }
 
 }
-
-// ============================================================
-// DELETE VENDOR
-// ============================================================
 
 function handleDeleteVendor(
     req,
@@ -1067,11 +2447,6 @@ function handleDeleteVendor(
 
     } catch (error) {
 
-        console.error(
-            "DELETE VENDOR ERROR:",
-            error
-        );
-
         sendJSON(
             res,
             500,
@@ -1086,7 +2461,7 @@ function handleDeleteVendor(
 }
 
 // ============================================================
-// CREATE VEHICLE
+// FLEET OMS
 // ============================================================
 
 async function handleCreateVehicle(
@@ -1096,10 +2471,6 @@ async function handleCreateVehicle(
 ) {
 
     try {
-
-        // ----------------------------------------------------
-        // CHECK VENDOR
-        // ----------------------------------------------------
 
         const vendor =
             vendorService.getVendor(
@@ -1121,19 +2492,13 @@ async function handleCreateVehicle(
 
         }
 
-        // ----------------------------------------------------
-        // READ BODY
-        // ----------------------------------------------------
-
         const body =
             await readBody(req);
 
-        // ----------------------------------------------------
-        // VALIDATION
-        // ----------------------------------------------------
-
         const validationError =
-            validateVehicleRequest(body);
+            validateVehicleRequest(
+                body
+            );
 
         if (validationError) {
 
@@ -1150,26 +2515,11 @@ async function handleCreateVehicle(
 
         }
 
-        // ----------------------------------------------------
-        // CREATE VEHICLE
-        // ----------------------------------------------------
-
         const vehicle =
             fleetService.createVehicle(
                 vendorId,
                 body
             );
-
-        console.log("");
-
-        console.log(
-            "Vehicle created:",
-            vehicle
-        );
-
-        // ----------------------------------------------------
-        // RESPONSE
-        // ----------------------------------------------------
 
         sendJSON(
             res,
@@ -1186,28 +2536,21 @@ async function handleCreateVehicle(
 
     } catch (error) {
 
-        console.error(
-            "CREATE VEHICLE ERROR:",
-            error
-        );
-
         sendJSON(
             res,
             400,
             {
+
                 error:
                     error.message ||
                     "Failed to create vehicle"
+
             }
         );
 
     }
 
 }
-
-// ============================================================
-// GET VENDOR VEHICLES
-// ============================================================
 
 function handleGetVendorVehicles(
     req,
@@ -1216,10 +2559,6 @@ function handleGetVendorVehicles(
 ) {
 
     try {
-
-        // ----------------------------------------------------
-        // CHECK VENDOR
-        // ----------------------------------------------------
 
         const vendor =
             vendorService.getVendor(
@@ -1241,25 +2580,15 @@ function handleGetVendorVehicles(
 
         }
 
-        // ----------------------------------------------------
-        // GET VEHICLES
-        // ----------------------------------------------------
-
         const vehicles =
             fleetService.getVendorVehicles(
                 vendorId
             );
 
-        // ----------------------------------------------------
-        // RESPONSE
-        // ----------------------------------------------------
-
         sendJSON(
             res,
             200,
             {
-
-                vendorId,
 
                 count:
                     vehicles.length,
@@ -1271,27 +2600,18 @@ function handleGetVendorVehicles(
 
     } catch (error) {
 
-        console.error(
-            "GET VENDOR VEHICLES ERROR:",
-            error
-        );
-
         sendJSON(
             res,
             500,
             {
                 error:
-                    "Failed to retrieve vendor vehicles"
+                    "Failed to retrieve vehicles"
             }
         );
 
     }
 
 }
-
-// ============================================================
-// GET SINGLE VEHICLE
-// ============================================================
 
 function handleGetVehicle(
     req,
@@ -1331,11 +2651,6 @@ function handleGetVehicle(
 
     } catch (error) {
 
-        console.error(
-            "GET VEHICLE ERROR:",
-            error
-        );
-
         sendJSON(
             res,
             500,
@@ -1348,10 +2663,6 @@ function handleGetVehicle(
     }
 
 }
-
-// ============================================================
-// UPDATE VEHICLE
-// ============================================================
 
 async function handleUpdateVehicle(
     req,
@@ -1400,28 +2711,21 @@ async function handleUpdateVehicle(
 
     } catch (error) {
 
-        console.error(
-            "UPDATE VEHICLE ERROR:",
-            error
-        );
-
         sendJSON(
             res,
             400,
             {
+
                 error:
                     error.message ||
                     "Failed to update vehicle"
+
             }
         );
 
     }
 
 }
-
-// ============================================================
-// DELETE VEHICLE
-// ============================================================
 
 function handleDeleteVehicle(
     req,
@@ -1466,11 +2770,6 @@ function handleDeleteVehicle(
 
     } catch (error) {
 
-        console.error(
-            "DELETE VEHICLE ERROR:",
-            error
-        );
-
         sendJSON(
             res,
             500,
@@ -1485,7 +2784,7 @@ function handleDeleteVehicle(
 }
 
 // ============================================================
-// CREATE SHIPMENT
+// SHIPMENT OMS
 // ============================================================
 
 async function handleCreateShipment(
@@ -1495,10 +2794,6 @@ async function handleCreateShipment(
 ) {
 
     try {
-
-        // ----------------------------------------------------
-        // CHECK VENDOR
-        // ----------------------------------------------------
 
         const vendor =
             vendorService.getVendor(
@@ -1520,19 +2815,13 @@ async function handleCreateShipment(
 
         }
 
-        // ----------------------------------------------------
-        // READ BODY
-        // ----------------------------------------------------
-
         const body =
             await readBody(req);
 
-        // ----------------------------------------------------
-        // VALIDATION
-        // ----------------------------------------------------
-
         const validationError =
-            validateShipmentRequest(body);
+            validateShipmentRequest(
+                body
+            );
 
         if (validationError) {
 
@@ -1548,10 +2837,6 @@ async function handleCreateShipment(
             return;
 
         }
-
-        // ----------------------------------------------------
-        // CHECK VEHICLE
-        // ----------------------------------------------------
 
         const vehicle =
             fleetService.getVehicle(
@@ -1573,10 +2858,6 @@ async function handleCreateShipment(
 
         }
 
-        // ----------------------------------------------------
-        // CHECK VEHICLE OWNERSHIP
-        // ----------------------------------------------------
-
         if (
             vehicle.vendorId !==
             vendorId
@@ -1595,10 +2876,6 @@ async function handleCreateShipment(
 
         }
 
-        // ----------------------------------------------------
-        // CHECK VEHICLE STATUS
-        // ----------------------------------------------------
-
         if (
             vehicle.status !==
             "ACTIVE"
@@ -1609,7 +2886,7 @@ async function handleCreateShipment(
                 400,
                 {
                     error:
-                        "Vehicle is not available for shipment"
+                        "Vehicle is not available"
                 }
             );
 
@@ -1617,16 +2894,34 @@ async function handleCreateShipment(
 
         }
 
-        // ----------------------------------------------------
-        // CHECK LOAD AGAINST CAPACITY
-        // ----------------------------------------------------
-
-        const shipmentLoad =
-            Number(body.load);
+        const load =
+            Number(
+                body.load
+            );
 
         if (
-            shipmentLoad >
-            vehicle.capacity
+            !Number.isFinite(load) ||
+            load < 0
+        ) {
+
+            sendJSON(
+                res,
+                400,
+                {
+                    error:
+                        "Shipment load must be a valid non-negative number"
+                }
+            );
+
+            return;
+
+        }
+
+        if (
+            load >
+            Number(
+                vehicle.capacity
+            )
         ) {
 
             sendJSON(
@@ -1640,7 +2935,8 @@ async function handleCreateShipment(
                     vehicleCapacity:
                         vehicle.capacity,
 
-                    shipmentLoad
+                    shipmentLoad:
+                        load
 
                 }
             );
@@ -1649,27 +2945,11 @@ async function handleCreateShipment(
 
         }
 
-        // ----------------------------------------------------
-        // CREATE SHIPMENT
-        // ----------------------------------------------------
-
         const shipment =
             shipmentService.createShipment(
                 vendorId,
-                body.vehicleId,
                 body
             );
-
-        console.log("");
-
-        console.log(
-            "Shipment created:",
-            shipment
-        );
-
-        // ----------------------------------------------------
-        // RESPONSE
-        // ----------------------------------------------------
 
         sendJSON(
             res,
@@ -1686,28 +2966,21 @@ async function handleCreateShipment(
 
     } catch (error) {
 
-        console.error(
-            "CREATE SHIPMENT ERROR:",
-            error
-        );
-
         sendJSON(
             res,
             400,
             {
+
                 error:
                     error.message ||
                     "Failed to create shipment"
+
             }
         );
 
     }
 
 }
-
-// ============================================================
-// GET VENDOR SHIPMENTS
-// ============================================================
 
 function handleGetVendorShipments(
     req,
@@ -1716,10 +2989,6 @@ function handleGetVendorShipments(
 ) {
 
     try {
-
-        // ----------------------------------------------------
-        // CHECK VENDOR
-        // ----------------------------------------------------
 
         const vendor =
             vendorService.getVendor(
@@ -1741,25 +3010,15 @@ function handleGetVendorShipments(
 
         }
 
-        // ----------------------------------------------------
-        // GET SHIPMENTS
-        // ----------------------------------------------------
-
         const shipments =
             shipmentService.getVendorShipments(
                 vendorId
             );
 
-        // ----------------------------------------------------
-        // RESPONSE
-        // ----------------------------------------------------
-
         sendJSON(
             res,
             200,
             {
-
-                vendorId,
 
                 count:
                     shipments.length,
@@ -1771,27 +3030,18 @@ function handleGetVendorShipments(
 
     } catch (error) {
 
-        console.error(
-            "GET VENDOR SHIPMENTS ERROR:",
-            error
-        );
-
         sendJSON(
             res,
             500,
             {
                 error:
-                    "Failed to retrieve vendor shipments"
+                    "Failed to retrieve shipments"
             }
         );
 
     }
 
 }
-
-// ============================================================
-// GET SINGLE SHIPMENT
-// ============================================================
 
 function handleGetShipment(
     req,
@@ -1831,11 +3081,6 @@ function handleGetShipment(
 
     } catch (error) {
 
-        console.error(
-            "GET SHIPMENT ERROR:",
-            error
-        );
-
         sendJSON(
             res,
             500,
@@ -1848,10 +3093,6 @@ function handleGetShipment(
     }
 
 }
-
-// ============================================================
-// UPDATE SHIPMENT
-// ============================================================
 
 async function handleUpdateShipment(
     req,
@@ -1884,12 +3125,9 @@ async function handleUpdateShipment(
         const body =
             await readBody(req);
 
-        // ----------------------------------------------------
-        // VEHICLE CHANGE VALIDATION
-        // ----------------------------------------------------
-
         if (
-            body.vehicleId !== undefined
+            body.vehicleId !==
+            undefined
         ) {
 
             const vehicle =
@@ -1949,13 +3187,38 @@ async function handleUpdateShipment(
             }
 
             const load =
-                body.load !== undefined
-                    ? Number(body.load)
-                    : Number(existingShipment.load);
+                body.load !==
+                undefined
+                    ? Number(
+                        body.load
+                    )
+                    : Number(
+                        existingShipment.load
+                    );
+
+            if (
+                !Number.isFinite(load) ||
+                load < 0
+            ) {
+
+                sendJSON(
+                    res,
+                    400,
+                    {
+                        error:
+                            "Shipment load must be a valid non-negative number"
+                    }
+                );
+
+                return;
+
+            }
 
             if (
                 load >
-                vehicle.capacity
+                Number(
+                    vehicle.capacity
+                )
             ) {
 
                 sendJSON(
@@ -1981,12 +3244,9 @@ async function handleUpdateShipment(
 
         }
 
-        // ----------------------------------------------------
-        // LOAD CHANGE VALIDATION
-        // ----------------------------------------------------
-
         if (
-            body.load !== undefined
+            body.load !==
+            undefined
         ) {
 
             const vehicle =
@@ -2011,11 +3271,33 @@ async function handleUpdateShipment(
             }
 
             const load =
-                Number(body.load);
+                Number(
+                    body.load
+                );
+
+            if (
+                !Number.isFinite(load) ||
+                load < 0
+            ) {
+
+                sendJSON(
+                    res,
+                    400,
+                    {
+                        error:
+                            "Shipment load must be a valid non-negative number"
+                    }
+                );
+
+                return;
+
+            }
 
             if (
                 load >
-                vehicle.capacity
+                Number(
+                    vehicle.capacity
+                )
             ) {
 
                 sendJSON(
@@ -2041,10 +3323,6 @@ async function handleUpdateShipment(
 
         }
 
-        // ----------------------------------------------------
-        // UPDATE SHIPMENT
-        // ----------------------------------------------------
-
         const shipment =
             shipmentService.updateShipment(
                 shipmentId,
@@ -2066,28 +3344,21 @@ async function handleUpdateShipment(
 
     } catch (error) {
 
-        console.error(
-            "UPDATE SHIPMENT ERROR:",
-            error
-        );
-
         sendJSON(
             res,
             400,
             {
+
                 error:
                     error.message ||
                     "Failed to update shipment"
+
             }
         );
 
     }
 
 }
-
-// ============================================================
-// DELETE SHIPMENT
-// ============================================================
 
 function handleDeleteShipment(
     req,
@@ -2152,11 +3423,6 @@ function handleDeleteShipment(
 
     } catch (error) {
 
-        console.error(
-            "DELETE SHIPMENT ERROR:",
-            error
-        );
-
         sendJSON(
             res,
             500,
@@ -2173,49 +3439,14 @@ function handleDeleteShipment(
 // ============================================================
 // ROUTE SELECTION POLICY
 // ============================================================
-//
-// Safety score remains purely environmental/hazard based.
-//
-// Distance and ETA are NOT included in the safety score.
-//
-// The selection layer uses:
-//
-// 1. Meaningful safety advantage -> safer route.
-// 2. Tiny safety advantage -> shorter route.
-// 3. Effectively equivalent safety -> shorter route.
-//
-// Example:
-//
-// Route A:
-// 250 km
-// Safety 98.60
-//
-// Route B:
-// 310 km
-// Safety 98.70
-//
-// Route B is only 0.10 points safer.
-//
-// SILP therefore selects Route A.
-//
-// ============================================================
 
 const ROUTE_SELECTION_CONFIG = {
-
-    // Difference of 2.00 or less is treated as
-    // effectively equivalent for route selection.
 
     safetyTolerance:
         2.00,
 
-    // A difference of 3 points or more is considered
-    // a significant safety improvement.
-
     significantSafetyImprovement:
         3.00,
-
-    // 25% is the maximum normal distance overhead
-    // considered acceptable when comparing routes.
 
     maximumEquivalentDistanceOverhead:
         0.25
@@ -2229,10 +3460,6 @@ const ROUTE_SELECTION_CONFIG = {
 function selectBestSafetyRoute(
     routes
 ) {
-
-    // --------------------------------------------------------
-    // EMPTY ROUTE LIST
-    // --------------------------------------------------------
 
     if (
         !routes ||
@@ -2251,10 +3478,6 @@ function selectBestSafetyRoute(
 
     }
 
-    // --------------------------------------------------------
-    // SINGLE ROUTE
-    // --------------------------------------------------------
-
     if (
         routes.length === 1
     ) {
@@ -2270,7 +3493,7 @@ function selectBestSafetyRoute(
                     "SAFETY_FIRST_WITH_EFFICIENCY_TIE_BREAK",
 
                 selectedBecause:
-                    "Only candidate route available",
+                    "Only distinct domestic route available",
 
                 safestRouteNumber:
                     routes[0].routeNumber,
@@ -2289,10 +3512,6 @@ function selectBestSafetyRoute(
         };
 
     }
-
-    // --------------------------------------------------------
-    // FIND SAFEST ROUTE
-    // --------------------------------------------------------
 
     const safestRoute =
         routes.reduce(
@@ -2329,10 +3548,6 @@ function selectBestSafetyRoute(
             safestRoute.distanceKm
         ) || Infinity;
 
-    // --------------------------------------------------------
-    // FIND SAFETY-EQUIVALENT ROUTES
-    // --------------------------------------------------------
-
     const safetyEquivalentRoutes =
         routes.filter(
             route => {
@@ -2351,10 +3566,6 @@ function selectBestSafetyRoute(
 
             }
         );
-
-    // --------------------------------------------------------
-    // FIND SHORTEST ROUTE AMONG SAFETY-EQUIVALENT ROUTES
-    // --------------------------------------------------------
 
     const shortestEquivalentRoute =
         safetyEquivalentRoutes.reduce(
@@ -2416,10 +3627,6 @@ function selectBestSafetyRoute(
             null
         );
 
-    // --------------------------------------------------------
-    // FALLBACK
-    // --------------------------------------------------------
-
     if (
         !shortestEquivalentRoute
     ) {
@@ -2455,10 +3662,6 @@ function selectBestSafetyRoute(
 
     }
 
-    // --------------------------------------------------------
-    // CALCULATE SAFETY DIFFERENCE
-    // --------------------------------------------------------
-
     const selectedSafety =
         Number(
             shortestEquivalentRoute
@@ -2468,10 +3671,6 @@ function selectBestSafetyRoute(
     const safetyDifference =
         safestScore -
         selectedSafety;
-
-    // --------------------------------------------------------
-    // CALCULATE DISTANCE OVERHEAD
-    // --------------------------------------------------------
 
     const selectedDistance =
         Number(
@@ -2493,20 +3692,11 @@ function selectBestSafetyRoute(
 
             : 0;
 
-    // --------------------------------------------------------
-    // DEFAULT
-    // --------------------------------------------------------
-
     let bestRoute =
         safestRoute;
 
     let selectedBecause =
         "Highest safety route";
-
-    // --------------------------------------------------------
-    // CASE 1
-    // SAFEST IS ALREADY THE MOST EFFICIENT
-    // --------------------------------------------------------
 
     if (
         shortestEquivalentRoute
@@ -2520,14 +3710,7 @@ function selectBestSafetyRoute(
         selectedBecause =
             "Highest safety route was also the most efficient among equivalent-safe routes";
 
-    }
-
-    // --------------------------------------------------------
-    // CASE 2
-    // SAFETY DIFFERENCE IS NEGLIGIBLE
-    // --------------------------------------------------------
-
-    else if (
+    } else if (
         safetyDifference <=
         ROUTE_SELECTION_CONFIG
             .safetyTolerance
@@ -2539,14 +3722,7 @@ function selectBestSafetyRoute(
         selectedBecause =
             "Safety was effectively equivalent, so the shorter route was selected";
 
-    }
-
-    // --------------------------------------------------------
-    // CASE 3
-    // SIGNIFICANT SAFETY IMPROVEMENT
-    // --------------------------------------------------------
-
-    else if (
+    } else if (
         safetyDifference >=
         ROUTE_SELECTION_CONFIG
             .significantSafetyImprovement
@@ -2558,15 +3734,7 @@ function selectBestSafetyRoute(
         selectedBecause =
             "Safety improvement was significant enough to justify the safer route";
 
-    }
-
-    // --------------------------------------------------------
-    // CASE 4
-    // MODERATE SAFETY IMPROVEMENT
-    // BUT LARGE DISTANCE PENALTY
-    // --------------------------------------------------------
-
-    else if (
+    } else if (
         distanceOverhead >
         ROUTE_SELECTION_CONFIG
             .maximumEquivalentDistanceOverhead
@@ -2578,14 +3746,7 @@ function selectBestSafetyRoute(
         selectedBecause =
             "Safety improvement was moderate but the additional distance was excessive";
 
-    }
-
-    // --------------------------------------------------------
-    // CASE 5
-    // SAFETY IMPROVEMENT JUSTIFIES DETOUR
-    // --------------------------------------------------------
-
-    else {
+    } else {
 
         bestRoute =
             safestRoute;
@@ -2594,10 +3755,6 @@ function selectBestSafetyRoute(
             "Safety improvement justified the limited additional distance";
 
     }
-
-    // --------------------------------------------------------
-    // RETURN DECISION
-    // --------------------------------------------------------
 
     return {
 
@@ -2645,123 +3802,6 @@ function selectBestSafetyRoute(
 }
 
 // ============================================================
-// HAZARD ASSESSMENT RESILIENCE
-// ============================================================
-//
-// Live weather/hazard providers can occasionally terminate
-// connections unexpectedly.
-//
-// Instead of allowing one failed provider request to break
-// the entire routing request, SILP:
-//
-// 1. waits up to 30 seconds;
-// 2. records the failure;
-// 3. uses a conservative HIGH-risk fallback;
-// 4. explicitly marks the route as having unavailable data.
-//
-// A route with unavailable hazard data must never be presented
-// to the user as verified safe.
-//
-// ============================================================
-
-const HAZARD_ASSESSMENT_TIMEOUT_MS =
-    30000;
-
-// ============================================================
-// CREATE UNAVAILABLE HAZARD RESULT
-// ============================================================
-
-function createUnavailableHazardResult(
-    error
-) {
-
-    const reason =
-        error &&
-        error.message
-
-            ? error.message
-
-            : "Live hazard provider unavailable";
-
-    return {
-
-        rainfall:
-            `Live weather data unavailable: ${reason}`,
-
-        floodRisk:
-            "HIGH",
-
-        landslideRisk:
-            "HIGH",
-
-        stormRisk:
-            "HIGH",
-
-        disasterRisk:
-            "HIGH",
-
-        overallRisk:
-            "HIGH",
-
-        dataUnavailable:
-            true,
-
-        dataUnavailableReason:
-            reason
-
-    };
-
-}
-
-// ============================================================
-// HAZARD ASSESSMENT WITH TIMEOUT
-// ============================================================
-
-function assessRouteHazardsWithTimeout(
-    route,
-    source,
-    destination
-) {
-
-    return Promise.race(
-
-        [
-
-            assessRouteHazards(
-                route,
-                source,
-                destination
-            ),
-
-            new Promise(
-                (
-                    _,
-                    reject
-                ) => {
-
-                    setTimeout(
-                        () => {
-
-                            reject(
-                                new Error(
-                                    `Hazard assessment timed out after ${HAZARD_ASSESSMENT_TIMEOUT_MS / 1000}s`
-                                )
-                            );
-
-                        },
-                        HAZARD_ASSESSMENT_TIMEOUT_MS
-                    );
-
-                }
-            )
-
-        ]
-
-    );
-
-}
-
-// ============================================================
 // PRINT ROUTE RESULT
 // ============================================================
 
@@ -2794,6 +3834,11 @@ function printFinalResult(
             );
 
             console.log(
+                "Generation Strategy:",
+                route.generationStrategy
+            );
+
+            console.log(
                 "Distance       :",
                 `${route.distanceKm} km`
             );
@@ -2801,6 +3846,11 @@ function printFinalResult(
             console.log(
                 "Estimated Time :",
                 `${route.durationMin} min`
+            );
+
+            console.log(
+                "Duration Sec.  :",
+                route.durationSeconds
             );
 
             console.log(
@@ -2823,21 +3873,15 @@ function printFinalResult(
                 route.international
             );
 
-            if (
-                route.international
-            ) {
+            console.log(
+                "Countries      :",
+                route.countriesCrossed
+            );
 
-                console.log(
-                    "Countries      :",
-                    route.countriesCrossed
-                );
-
-                console.log(
-                    "Border Warning :",
-                    route.borderWarning
-                );
-
-            }
+            console.log(
+                "Country Codes  :",
+                route.countryCodes
+            );
 
             if (
                 route.hazardDataUnavailable
@@ -2880,16 +3924,15 @@ function printFinalResult(
             `${bestRoute.distanceKm} km`
         );
 
-        if (
+        console.log(
+            "ESTIMATED TIME:",
+            `${bestRoute.durationMin} min`
+        );
+
+        console.log(
+            "INTERNATIONAL:",
             bestRoute.international
-        ) {
-
-            console.log(
-                "BORDER WARNING:",
-                bestRoute.borderWarning
-            );
-
-        }
+        );
 
         console.log(
             "================================================"
@@ -2912,9 +3955,9 @@ const server =
             res
         ) => {
 
-            // ------------------------------------------------
+            // =================================================
             // CORS PREFLIGHT
-            // ------------------------------------------------
+            // =================================================
 
             if (
                 req.method ===
@@ -2931,10 +3974,6 @@ const server =
                 return;
 
             }
-
-            // ------------------------------------------------
-            // GET PATH WITHOUT QUERY PARAMETERS
-            // ------------------------------------------------
 
             const path =
                 getPath(
@@ -2962,14 +4001,20 @@ const server =
                             "OK",
 
                         version:
-                            "v0.4",
+                            "v0.9",
+
+                        routeScope:
+                            "INDIA_ONLY",
 
                         modules: {
 
                             routing:
-                                "ACTIVE",
+                                "ACTIVE - PROGRESSIVE + DIVERSITY FILTER",
 
                             hazardAssessment:
+                                "ACTIVE",
+
+                            environmentalDataCollection:
                                 "ACTIVE",
 
                             safetyScoring:
@@ -2985,10 +4030,13 @@ const server =
                                 "ACTIVE",
 
                             internationalBorderAssessment:
-                                "ACTIVE",
+                                "ACTIVE - HARD REJECTION POLICY",
 
                             routeSelection:
-                                "SAFETY_FIRST_WITH_EFFICIENCY_TIE_BREAK"
+                                "SAFETY_FIRST_WITH_EFFICIENCY_TIE_BREAK",
+
+                            progressiveRouteSearch:
+                                "ACTIVE - BORDER + SIMILARITY CHECK AFTER EVERY BATCH"
 
                         }
 
@@ -3000,7 +4048,7 @@ const server =
             }
 
             // =================================================
-            // HEALTH CHECK
+            // HEALTH
             // =================================================
 
             if (
@@ -3020,9 +4068,30 @@ const server =
                             "SILP backend",
 
                         version:
-                            "v0.4",
+                            "v0.9",
+
+                        routeScope:
+                            "INDIA_ONLY",
 
                         routing:
+                            true,
+
+                        progressiveRouteSearch:
+                            true,
+
+                        routeDiversityFiltering:
+                            true,
+
+                        minimumDomesticRoutes:
+                            MINIMUM_DOMESTIC_ROUTES,
+
+                        preferredDomesticRoutes:
+                            PREFERRED_DOMESTIC_ROUTES,
+
+                        maximumReturnedRoutes:
+                            MAX_RETURNED_DOMESTIC_ROUTES,
+
+                        environmentalDataCollection:
                             true,
 
                         hazardAssessment:
@@ -3034,6 +4103,12 @@ const server =
                         internationalBorderAssessment:
                             true,
 
+                        internationalRoutesSupported:
+                            false,
+
+                        internationalRoutePolicy:
+                            "HARD_REJECTION",
+
                         vendorOMS:
                             true,
 
@@ -3041,10 +4116,7 @@ const server =
                             true,
 
                         shipmentOMS:
-                            true,
-
-                        hazardTimeoutMs:
-                            HAZARD_ASSESSMENT_TIMEOUT_MS
+                            true
 
                     }
                 );
@@ -3071,10 +4143,25 @@ const server =
                             "Route API is working",
 
                         architecture:
-                            "Dynamic hazard-aware routing",
+                            "Progressive dynamic hazard-aware routing with domestic route diversity filtering",
+
+                        routeScope:
+                            "INDIA_ONLY",
 
                         optimization:
-                            "Safety-first selection with efficiency tie-break; ACO pending"
+                            "Safety-first selection with efficiency tie-break; domestic routes only; ACO pending",
+
+                        routeGeneration:
+                            "OSRM batch -> immediate border validation -> geometry similarity filtering -> next batch until preferred target",
+
+                        minimumDomesticRoutes:
+                            MINIMUM_DOMESTIC_ROUTES,
+
+                        preferredDomesticRoutes:
+                            PREFERRED_DOMESTIC_ROUTES,
+
+                        maximumReturnedRoutes:
+                            MAX_RETURNED_DOMESTIC_ROUTES
 
                     }
                 );
@@ -3138,9 +4225,7 @@ const server =
             }
 
             // =================================================
-            // VENDOR VEHICLE COLLECTION
-            //
-            // /vendors/:vendorId/vehicles
+            // VENDOR VEHICLES
             // =================================================
 
             const vendorVehiclesMatch =
@@ -3155,13 +4240,8 @@ const server =
                 const vendorId =
                     vendorVehiclesMatch[1];
 
-                // ---------------------------------------------
-                // CREATE VEHICLE
-                // ---------------------------------------------
-
                 if (
-                    req.method ===
-                    "POST"
+                    req.method === "POST"
                 ) {
 
                     await handleCreateVehicle(
@@ -3174,13 +4254,8 @@ const server =
 
                 }
 
-                // ---------------------------------------------
-                // GET VENDOR VEHICLES
-                // ---------------------------------------------
-
                 if (
-                    req.method ===
-                    "GET"
+                    req.method === "GET"
                 ) {
 
                     handleGetVendorVehicles(
@@ -3196,9 +4271,7 @@ const server =
             }
 
             // =================================================
-            // VENDOR SHIPMENT COLLECTION
-            //
-            // /vendors/:vendorId/shipments
+            // VENDOR SHIPMENTS
             // =================================================
 
             const vendorShipmentsMatch =
@@ -3213,13 +4286,8 @@ const server =
                 const vendorId =
                     vendorShipmentsMatch[1];
 
-                // ---------------------------------------------
-                // CREATE SHIPMENT
-                // ---------------------------------------------
-
                 if (
-                    req.method ===
-                    "POST"
+                    req.method === "POST"
                 ) {
 
                     await handleCreateShipment(
@@ -3232,13 +4300,8 @@ const server =
 
                 }
 
-                // ---------------------------------------------
-                // GET VENDOR SHIPMENTS
-                // ---------------------------------------------
-
                 if (
-                    req.method ===
-                    "GET"
+                    req.method === "GET"
                 ) {
 
                     handleGetVendorShipments(
@@ -3254,9 +4317,7 @@ const server =
             }
 
             // =================================================
-            // VENDOR ID ROUTES
-            //
-            // /vendors/:vendorId
+            // VENDOR ID
             // =================================================
 
             const vendorMatch =
@@ -3271,13 +4332,8 @@ const server =
                 const vendorId =
                     vendorMatch[1];
 
-                // ---------------------------------------------
-                // GET VENDOR
-                // ---------------------------------------------
-
                 if (
-                    req.method ===
-                    "GET"
+                    req.method === "GET"
                 ) {
 
                     handleGetVendor(
@@ -3290,13 +4346,8 @@ const server =
 
                 }
 
-                // ---------------------------------------------
-                // UPDATE VENDOR
-                // ---------------------------------------------
-
                 if (
-                    req.method ===
-                    "PUT"
+                    req.method === "PUT"
                 ) {
 
                     await handleUpdateVendor(
@@ -3309,13 +4360,8 @@ const server =
 
                 }
 
-                // ---------------------------------------------
-                // DELETE VENDOR
-                // ---------------------------------------------
-
                 if (
-                    req.method ===
-                    "DELETE"
+                    req.method === "DELETE"
                 ) {
 
                     handleDeleteVendor(
@@ -3331,9 +4377,7 @@ const server =
             }
 
             // =================================================
-            // VEHICLE ID ROUTES
-            //
-            // /vehicles/:vehicleId
+            // VEHICLE ID
             // =================================================
 
             const vehicleMatch =
@@ -3348,13 +4392,8 @@ const server =
                 const vehicleId =
                     vehicleMatch[1];
 
-                // ---------------------------------------------
-                // GET VEHICLE
-                // ---------------------------------------------
-
                 if (
-                    req.method ===
-                    "GET"
+                    req.method === "GET"
                 ) {
 
                     handleGetVehicle(
@@ -3367,13 +4406,8 @@ const server =
 
                 }
 
-                // ---------------------------------------------
-                // UPDATE VEHICLE
-                // ---------------------------------------------
-
                 if (
-                    req.method ===
-                    "PUT"
+                    req.method === "PUT"
                 ) {
 
                     await handleUpdateVehicle(
@@ -3386,13 +4420,8 @@ const server =
 
                 }
 
-                // ---------------------------------------------
-                // DELETE VEHICLE
-                // ---------------------------------------------
-
                 if (
-                    req.method ===
-                    "DELETE"
+                    req.method === "DELETE"
                 ) {
 
                     handleDeleteVehicle(
@@ -3408,9 +4437,7 @@ const server =
             }
 
             // =================================================
-            // SHIPMENT ID ROUTES
-            //
-            // /shipments/:shipmentId
+            // SHIPMENT ID
             // =================================================
 
             const shipmentMatch =
@@ -3425,13 +4452,8 @@ const server =
                 const shipmentId =
                     shipmentMatch[1];
 
-                // ---------------------------------------------
-                // GET SHIPMENT
-                // ---------------------------------------------
-
                 if (
-                    req.method ===
-                    "GET"
+                    req.method === "GET"
                 ) {
 
                     handleGetShipment(
@@ -3444,13 +4466,8 @@ const server =
 
                 }
 
-                // ---------------------------------------------
-                // UPDATE SHIPMENT
-                // ---------------------------------------------
-
                 if (
-                    req.method ===
-                    "PUT"
+                    req.method === "PUT"
                 ) {
 
                     await handleUpdateShipment(
@@ -3463,13 +4480,8 @@ const server =
 
                 }
 
-                // ---------------------------------------------
-                // DELETE SHIPMENT
-                // ---------------------------------------------
-
                 if (
-                    req.method ===
-                    "DELETE"
+                    req.method === "DELETE"
                 ) {
 
                     handleDeleteShipment(
@@ -3515,7 +4527,7 @@ server.listen(
         );
 
         console.log(
-            "       SILP BACKEND SERVER v0.4"
+            "       SILP BACKEND SERVER v0.9"
         );
 
         console.log(
@@ -3616,6 +4628,60 @@ server.listen(
 
         console.log(
             "DELETE /shipments/:shipmentId"
+        );
+
+        console.log("");
+
+        console.log(
+            "ROUTE POLICY: INDIA ONLY"
+        );
+
+        console.log(
+            "International routes: NOT SUPPORTED"
+        );
+
+        console.log(
+            "International candidates: HARD DISCARDED"
+        );
+
+        console.log(
+            "Unverified candidates: HARD DISCARDED"
+        );
+
+        console.log(
+            "Border validation: FULL POLYLINE / ~5 KM SAMPLING"
+        );
+
+        console.log(
+            "Route search: PROGRESSIVE"
+        );
+
+        console.log(
+            "Minimum domestic routes: 1"
+        );
+
+        console.log(
+            "Preferred domestic routes: 2"
+        );
+
+        console.log(
+            "Maximum returned routes: 3"
+        );
+
+        console.log(
+            "Route diversity: GEOMETRY SIMILARITY FILTER"
+        );
+
+        console.log(
+            "Border check: AFTER EVERY OSRM BATCH"
+        );
+
+        console.log(
+            "Next OSRM batch: ONLY IF < 2 DISTINCT DOMESTIC ROUTES"
+        );
+
+        console.log(
+            "Environmental scoring: DOMESTIC ROUTES ONLY"
         );
 
         console.log(
