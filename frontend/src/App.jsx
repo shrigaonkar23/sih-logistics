@@ -358,6 +358,42 @@ function App() {
       load: "",
     });
 
+  /*
+   * IMPORTANT:
+   *
+   * Do not use selectedVendorId as the shipment modal's
+   * source of truth.
+   *
+   * selectedVendorId belongs to the Vendor OMS screen.
+   * A route-created shipment can be opened while the
+   * Vendor OMS is showing a different vendor.
+   *
+   * shipmentVendorId therefore stores the vendor that
+   * actually owns the shipment being created.
+   */
+
+  const [shipmentVendorId, setShipmentVendorId] =
+    useState("");
+
+  /*
+   * Dedicated vehicle list for the shipment modal.
+   *
+   * This prevents the modal from accidentally using a
+   * stale `vehicles` array belonging to another vendor.
+   */
+
+  const [shipmentVehicles, setShipmentVehicles] =
+    useState([]);
+
+  const [shipmentVehicleLoading, setShipmentVehicleLoading] =
+    useState(false);
+
+  const [shipmentError, setShipmentError] =
+    useState("");
+
+  const [shipmentSubmitting, setShipmentSubmitting] =
+    useState(false);
+
   /* ==========================================================
      INITIAL DATA
      ========================================================== */
@@ -430,6 +466,11 @@ function App() {
   }
 
   async function loadVendorVehicles(vendorId) {
+    if (!vendorId) {
+      setVehicles([]);
+      return [];
+    }
+
     setVehicleLoading(true);
 
     try {
@@ -445,13 +486,16 @@ function App() {
 
       const data = await response.json();
 
-      setVehicles(
-        Array.isArray(data)
-          ? data
-          : data.vehicles || []
-      );
+      const list = Array.isArray(data)
+        ? data
+        : data.vehicles || [];
+
+      setVehicles(list);
+
+      return list;
     } catch {
       setVehicles([]);
+      return [];
     } finally {
       setVehicleLoading(false);
     }
@@ -460,6 +504,11 @@ function App() {
   async function loadVendorShipments(
     vendorId
   ) {
+    if (!vendorId) {
+      setShipments([]);
+      return [];
+    }
+
     setShipmentLoading(true);
 
     try {
@@ -475,13 +524,16 @@ function App() {
 
       const data = await response.json();
 
-      setShipments(
-        Array.isArray(data)
-          ? data
-          : data.shipments || []
-      );
+      const list = Array.isArray(data)
+        ? data
+        : data.shipments || [];
+
+      setShipments(list);
+
+      return list;
     } catch {
       setShipments([]);
+      return [];
     } finally {
       setShipmentLoading(false);
     }
@@ -490,6 +542,12 @@ function App() {
   async function loadRouteVehicles(
     vendorId
   ) {
+    if (!vendorId) {
+      setRouteVehicles([]);
+      setRouteVehicleId("");
+      return [];
+    }
+
     setRouteVehicleLoading(true);
 
     try {
@@ -532,11 +590,64 @@ function App() {
       } else {
         setRouteVehicleId("");
       }
+
+      return list;
     } catch {
       setRouteVehicles([]);
       setRouteVehicleId("");
+      return [];
     } finally {
       setRouteVehicleLoading(false);
+    }
+  }
+
+  /*
+   * Load vehicles specifically for the shipment modal.
+   *
+   * This is intentionally separate from `vehicles` because
+   * the Vendor OMS may currently be displaying another vendor.
+   */
+
+  async function loadShipmentVehicles(
+    vendorId
+  ) {
+    if (!vendorId) {
+      setShipmentVehicles([]);
+      return [];
+    }
+
+    setShipmentVehicleLoading(true);
+
+    try {
+      const response = await fetch(
+        `${API_BASE}/vendors/${vendorId}/vehicles`
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          "Unable to load vehicles for shipment."
+        );
+      }
+
+      const data = await response.json();
+
+      const list = Array.isArray(data)
+        ? data
+        : data.vehicles || [];
+
+      setShipmentVehicles(list);
+
+      return list;
+    } catch (error) {
+      setShipmentVehicles([]);
+      setShipmentError(
+        error.message ||
+          "Unable to load vehicles for shipment."
+      );
+
+      return [];
+    } finally {
+      setShipmentVehicleLoading(false);
     }
   }
 
@@ -623,16 +734,6 @@ function App() {
           "The routing engine did not return any routes."
         );
       }
-
-      /*
-       * /find-route returns:
-       *
-       * data.bestRoute = summary
-       * data.routes    = complete routes
-       *
-       * Match the recommended route back
-       * to the complete route list.
-       */
 
       const recommendedSummary =
         data.bestRoute || null;
@@ -742,6 +843,9 @@ function App() {
     event.preventDefault();
 
     if (!selectedVendorId) {
+      setVendorError(
+        "Select a vendor before adding a vehicle."
+      );
       return;
     }
 
@@ -791,6 +895,32 @@ function App() {
       await loadVendorVehicles(
         selectedVendorId
       );
+
+      /*
+       * If this vendor is also currently selected
+       * in the route planner, refresh its route vehicles.
+       */
+      if (
+        String(routeVendorId) ===
+        String(selectedVendorId)
+      ) {
+        await loadRouteVehicles(
+          selectedVendorId
+        );
+      }
+
+      /*
+       * If a shipment modal belongs to this vendor,
+       * refresh its vehicle list too.
+       */
+      if (
+        String(shipmentVendorId) ===
+        String(selectedVendorId)
+      ) {
+        await loadShipmentVehicles(
+          selectedVendorId
+        );
+      }
     } catch (error) {
       setVendorError(error.message);
     }
@@ -805,22 +935,78 @@ function App() {
   ) {
     event.preventDefault();
 
-    if (!selectedVendorId) {
+    setShipmentError("");
+
+    /*
+     * IMPORTANT:
+     *
+     * Use shipmentVendorId first.
+     *
+     * This prevents a route-created shipment from accidentally
+     * being submitted to whatever vendor happens to be selected
+     * in Vendor OMS.
+     */
+    const vendorId =
+      shipmentVendorId ||
+      selectedVendorId;
+
+    if (!vendorId) {
+      setShipmentError(
+        "Select a vendor before creating a shipment."
+      );
       return;
     }
 
+    if (!shipmentForm.vehicleId) {
+      setShipmentError(
+        "Select a vehicle before creating a shipment."
+      );
+      return;
+    }
+
+    /*
+     * Make sure the selected vehicle actually belongs to
+     * the vendor whose shipment is being created.
+     */
+    const vehicleBelongsToVendor =
+      shipmentVehicles.some(
+        (vehicle) =>
+          String(
+            getEntityId(vehicle)
+          ) ===
+          String(shipmentForm.vehicleId)
+      );
+
+    if (!vehicleBelongsToVendor) {
+      setShipmentError(
+        "The selected vehicle does not belong to this vendor. Please select a vehicle from this vendor's fleet."
+      );
+      return;
+    }
+
+    setShipmentSubmitting(true);
+
     try {
       const response = await fetch(
-        `${API_BASE}/vendors/${selectedVendorId}/shipments`,
+        `${API_BASE}/vendors/${vendorId}/shipments`,
         {
           method: "POST",
           headers: {
             "Content-Type":
               "application/json",
           },
-          body: JSON.stringify(
-            shipmentForm
-          ),
+          body: JSON.stringify({
+            ...shipmentForm,
+
+            /*
+             * Normalize the vehicle ID to the exact
+             * value selected from this vendor's fleet.
+             */
+            vehicleId:
+              String(
+                shipmentForm.vehicleId
+              ),
+          }),
         }
       );
 
@@ -833,6 +1019,10 @@ function App() {
         );
       }
 
+      /*
+       * Close and reset the modal only after the backend
+       * confirms successful creation.
+       */
       setShowShipmentForm(false);
 
       setShipmentForm({
@@ -843,15 +1033,72 @@ function App() {
         load: "",
       });
 
-      await loadVendorShipments(
-        selectedVendorId
+      setShipmentError("");
+
+      /*
+       * Make this vendor the active Vendor OMS vendor.
+       */
+      setSelectedVendorId(
+        String(vendorId)
       );
+
+      /*
+       * Refresh both fleet and shipment data for the
+       * exact vendor that owns the shipment.
+       */
+      await Promise.all([
+        loadVendorVehicles(
+          String(vendorId)
+        ),
+        loadVendorShipments(
+          String(vendorId)
+        ),
+      ]);
+
+      /*
+       * If the route planner was also using this vendor,
+       * keep its vehicle list synchronized.
+       */
+      if (
+        String(routeVendorId) ===
+        String(vendorId)
+      ) {
+        await loadRouteVehicles(
+          String(vendorId)
+        );
+      }
+
+      /*
+       * Move to Vendor OMS so the user immediately sees
+       * the newly-created shipment.
+       */
+      setActiveSection("vendor");
+
+      /*
+       * The shipment context has completed.
+       */
+      setShipmentVendorId("");
+      setShipmentVehicles([]);
     } catch (error) {
-      setVendorError(error.message);
+      setShipmentError(
+        error.message ||
+          "Unable to create shipment."
+      );
+    } finally {
+      setShipmentSubmitting(false);
     }
   }
 
-  function openShipmentFromRoute() {
+  /*
+   * Opens shipment creation from a route.
+   *
+   * The important change is that the vendor and vehicle are
+   * explicitly captured into shipment-specific state before
+   * the modal is opened.
+   */
+  async function openShipmentFromRoute(
+    route
+  ) {
     if (
       !routeVendorId ||
       !routeVehicleId
@@ -862,14 +1109,123 @@ function App() {
       return;
     }
 
-    setSelectedVendorId(
-      String(routeVendorId)
+    const vendorId =
+      String(routeVendorId);
+
+    const vehicleId =
+      String(routeVehicleId);
+
+    setShipmentError("");
+
+    /*
+     * First load the actual fleet belonging to this vendor.
+     */
+    const vendorVehicles =
+      await loadShipmentVehicles(
+        vendorId
+      );
+
+    /*
+     * Confirm that the route vehicle is actually
+     * part of this vendor's current fleet.
+     */
+    const routeVehicle =
+      vendorVehicles.find(
+        (vehicle) =>
+          String(
+            getEntityId(vehicle)
+          ) === vehicleId
+      );
+
+    if (!routeVehicle) {
+      setRouteError(
+        "The selected route vehicle could not be found in this vendor's current fleet. Please refresh the vehicle selection."
+      );
+      return;
+    }
+
+    /*
+     * Store the vendor independently from selectedVendorId.
+     */
+    setShipmentVendorId(
+      vendorId
     );
 
+    /*
+     * Keep Vendor OMS selection synchronized as well.
+     */
+    setSelectedVendorId(
+      vendorId
+    );
+
+    /*
+     * Use the exact validated vehicle ID.
+     */
     setShipmentForm({
-      vehicleId: routeVehicleId,
-      origin: source,
-      destination,
+      vehicleId:
+        String(
+          getEntityId(routeVehicle)
+        ),
+      origin:
+        source.trim(),
+      destination:
+        destination.trim(),
+      shipmentType: "General",
+      load: "",
+    });
+
+    setShowShipmentForm(true);
+  }
+
+  /*
+   * Opens the normal Vendor OMS shipment modal.
+   *
+   * This is intentionally separate from the route flow.
+   */
+  async function openShipmentFromVendor() {
+    if (!selectedVendorId) {
+      setVendorError(
+        "Select a vendor before creating a shipment."
+      );
+      return;
+    }
+
+    const vendorId =
+      String(selectedVendorId);
+
+    setShipmentError("");
+
+    /*
+     * Explicitly associate the modal with the currently
+     * selected vendor.
+     */
+    setShipmentVendorId(
+      vendorId
+    );
+
+    /*
+     * Load this vendor's vehicles specifically for the modal.
+     */
+    const vendorVehicles =
+      await loadShipmentVehicles(
+        vendorId
+      );
+
+    /*
+     * Do not carry over a vehicle belonging to another
+     * vendor.
+     */
+    setShipmentForm({
+      vehicleId:
+        vendorVehicles.length > 0
+          ? String(
+              getEntityId(
+                vendorVehicles[0]
+              )
+            )
+          : "",
+      origin: "",
+      destination: "",
       shipmentType: "General",
       load: "",
     });
@@ -904,6 +1260,19 @@ function App() {
             String(routeVendorId)
         ) || null,
       [vendors, routeVendorId]
+    );
+
+  const shipmentVendor =
+    useMemo(
+      () =>
+        vendors.find(
+          (vendor) =>
+            String(
+              getEntityId(vendor)
+            ) ===
+            String(shipmentVendorId)
+        ) || null,
+      [vendors, shipmentVendorId]
     );
 
   /*
@@ -974,9 +1343,9 @@ function App() {
       selectedRouteData
     );
 
-  /* ==========================================================
+  /* ============================================================
      RENDER
-     ========================================================== */
+     ============================================================ */
 
   return (
     <div className="app-shell">
@@ -1134,10 +1503,6 @@ function App() {
                   ================================================== */}
 
               <section className="route-panel glass">
-
-                {/* =================================================
-                    SEARCH SCREEN
-                    ================================================= */}
 
                 {routes.length === 0 ? (
 
@@ -1460,10 +1825,6 @@ function App() {
                   </div>
 
                 ) : (
-
-                  /* =================================================
-                     ANALYSIS SCREEN
-                     ================================================= */
 
                   <div className="analysis-screen">
 
@@ -2629,10 +2990,8 @@ function App() {
 
                           <button
                             className="secondary-button"
-                            onClick={() =>
-                              setShowShipmentForm(
-                                true
-                              )
+                            onClick={
+                              openShipmentFromVendor
                             }
                             type="button"
                           >
@@ -3063,9 +3422,12 @@ function App() {
 
         <div
           className="modal-backdrop"
-          onClick={() =>
-            setShowShipmentForm(false)
-          }
+          onClick={() => {
+            if (!shipmentSubmitting) {
+              setShowShipmentForm(false);
+              setShipmentError("");
+            }
+          }}
         >
 
           <form
@@ -3090,19 +3452,60 @@ function App() {
                   Create shipment
                 </h2>
 
+                {shipmentVendor && (
+
+                  <p
+                    style={{
+                      margin:
+                        "6px 0 0",
+                      fontSize:
+                        "13px",
+                      opacity: 0.65,
+                    }}
+                  >
+                    Vendor:{" "}
+                    <strong>
+                      {shipmentVendor.name ||
+                        "Unnamed vendor"}
+                    </strong>
+                  </p>
+
+                )}
+
               </div>
 
               <button
                 type="button"
                 className="close-button"
-                onClick={() =>
-                  setShowShipmentForm(false)
-                }
+                onClick={() => {
+                  if (
+                    shipmentSubmitting
+                  ) {
+                    return;
+                  }
+
+                  setShowShipmentForm(
+                    false
+                  );
+                  setShipmentError("");
+                }}
               >
                 ×
               </button>
 
             </div>
+
+            {shipmentError && (
+
+              <div className="route-error">
+
+                <span>!</span>
+
+                {shipmentError}
+
+              </div>
+
+            )}
 
             <div className="modal-fields">
 
@@ -3124,13 +3527,21 @@ function App() {
                     })
                   }
                   required
+                  disabled={
+                    shipmentVehicleLoading ||
+                    shipmentSubmitting
+                  }
                 >
 
                   <option value="">
-                    Select vehicle
+                    {shipmentVehicleLoading
+                      ? "Loading vehicles..."
+                      : shipmentVehicles.length
+                      ? "Select vehicle"
+                      : "No vehicles available"}
                   </option>
 
-                  {vehicles.map(
+                  {shipmentVehicles.map(
                     (vehicle) => {
 
                       const id =
@@ -3174,6 +3585,9 @@ function App() {
                   }
                   placeholder="Origin"
                   required
+                  disabled={
+                    shipmentSubmitting
+                  }
                 />
 
               </div>
@@ -3197,6 +3611,9 @@ function App() {
                   }
                   placeholder="Destination"
                   required
+                  disabled={
+                    shipmentSubmitting
+                  }
                 />
 
               </div>
@@ -3219,6 +3636,9 @@ function App() {
                         shipmentType:
                           e.target.value,
                       })
+                    }
+                    disabled={
+                      shipmentSubmitting
                     }
                   >
 
@@ -3264,6 +3684,9 @@ function App() {
                       })
                     }
                     placeholder="e.g. 2 tonnes"
+                    disabled={
+                      shipmentSubmitting
+                    }
                   />
 
                 </div>
@@ -3275,8 +3698,23 @@ function App() {
             <button
               className="primary-button"
               type="submit"
+              disabled={
+                shipmentSubmitting ||
+                shipmentVehicleLoading ||
+                !shipmentForm.vehicleId ||
+                !shipmentVendorId
+              }
             >
-              Create shipment
+
+              {shipmentSubmitting ? (
+                <>
+                  <span className="spinner" />
+                  Creating shipment...
+                </>
+              ) : (
+                "Create shipment"
+              )}
+
             </button>
 
           </form>
