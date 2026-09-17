@@ -1,3 +1,5 @@
+process.loadEnvFile(".env");
+
 const oracledb = require("oracledb");
 
 async function testOracle() {
@@ -5,9 +7,9 @@ async function testOracle() {
 
     try {
         connection = await oracledb.getConnection({
-            user: "SYSTEM",
-            password: "REDACTED",
-            connectString: "10.130.65.22:1521/FREEPDB1"
+            user: process.env.ORACLE_USER,
+            password: process.env.ORACLE_PASSWORD,
+            connectString: process.env.ORACLE_CONNECT_STRING
         });
 
         console.log("Oracle connection successful!");
@@ -17,9 +19,11 @@ async function testOracle() {
         );
 
         console.log(result.rows);
+
     } catch (err) {
         console.error("Oracle connection failed:");
         console.error(err);
+
     } finally {
         if (connection) {
             await connection.close();
